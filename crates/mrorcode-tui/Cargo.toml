@@ -1,0 +1,33 @@
+[package]
+name = "mrorcode-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mrorcode-kernel = { workspace = true }
+mrorcode-agent = { workspace = true }
+mrorcode-config = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tui-textarea = { workspace = true }
+pulldown-cmark = { workspace = true }
+unicode-width = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lib]
+bench = false
+
+[[bench]]
+name = "render"
+harness = false

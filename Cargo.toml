@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+default-members = ["crates/mrorcode-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A fast terminal AI coding agent"
+rust-version = "1.88"
+
+# 速度优先：从第一天起就使用优化的 release profile（体积优化如 panic=abort/mimalloc 留待 M5 评估）
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# 供采样/剖析使用：release 性能 + 最小调试信息（仅行号表）
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+[workspace.dependencies]
+# 内部 crate
+mrorcode-kernel = { path = "crates/mrorcode-kernel" }
+mrorcode-capabilities = { path = "crates/mrorcode-capabilities" }
+mrorcode-agent = { path = "crates/mrorcode-agent" }
+mrorcode-config = { path = "crates/mrorcode-config" }
+mrorcode-tui = { path = "crates/mrorcode-tui" }
+
+# 异步/序列化基线
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+
+# HTTP / SSE
+# TLS：使用 native-tls（Windows=SChannel / macOS=Security.framework），
+# 纯 Rust 系统绑定，无需 C 编译器；避免 rustls 的 ring/aws-lc 本地构建依赖。
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "stream", "json", "charset", "http2"] }
+bytes = "1"
+async-stream = "0.3"
+encoding_rs = "0.8"
+
+# 配置
+toml = "0.8"
+dirs = "5"
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+tui-textarea = { package = "tui-textarea-2", version = "0.13", default-features = false, features = ["crossterm"] }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+unicode-width = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 开发
+criterion = "0.5"
+wiremock = "0.6"
