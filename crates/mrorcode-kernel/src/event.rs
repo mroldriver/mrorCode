@@ -64,14 +64,9 @@ pub enum AgentEvent {
         payload: Value,
     },
     /// 整轮结束（终态）。
-    TurnComplete {
-        stop_reason: StopReason,
-    },
+    TurnComplete { stop_reason: StopReason },
     /// 可恢复/不可恢复错误（未终止整轮时的告警也用它）。
-    Error {
-        message: String,
-        retryable: bool,
-    },
+    Error { message: String, retryable: bool },
     /// 取消完成（终态）。
     Cancelled,
 }

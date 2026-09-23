@@ -146,8 +146,7 @@ impl Conversation {
             .collect();
         self.messages.retain(|m| {
             m.role != Role::Tool
-                || m
-                    .tool_call_id
+                || m.tool_call_id
                     .as_deref()
                     .is_some_and(|id| known_call_ids.contains(id))
         });
@@ -175,8 +174,7 @@ mod tests {
     fn repair_keeps_paired_messages() {
         let mut convo = Conversation::new();
         convo.push(Message::assistant_tool_calls(vec![ToolCall::new(
-            "c1",
-            "bash",
+            "c1", "bash",
         )]));
         convo.push(Message::tool_result(&ToolResult {
             call_id: "c1".into(),

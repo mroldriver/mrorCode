@@ -24,7 +24,10 @@ pub enum StreamEvent {
     /// 工具调用参数 JSON 片段。
     ToolCallDelta { id: String, arguments: String },
     /// token 用量（同一会话中按字段取最大值合并）。
-    Usage { input_tokens: u64, output_tokens: u64 },
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
     /// provider 错误（流中途失败）。
     Error(ProviderError),
 }
@@ -113,9 +116,8 @@ pub trait LlmProvider: Send + Sync {
         cancel: &'a CancellationToken,
     ) -> Pin<
         Box<
-            dyn std::future::Future<
-                    Output = ProviderResult<BoxStream<'a, StreamEvent>>,
-                > + Send
+            dyn std::future::Future<Output = ProviderResult<BoxStream<'a, StreamEvent>>>
+                + Send
                 + 'a,
         >,
     >;

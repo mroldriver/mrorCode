@@ -60,10 +60,11 @@ impl RequestBroker {
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);
         // 事件通道若已关闭（agent 退出），登记立即作废，等待侧拿到 Null
-        let _ = self
-            .inner
-            .events
-            .send(AgentEvent::Request { id, kind: kind.to_string(), payload });
+        let _ = self.inner.events.send(AgentEvent::Request {
+            id,
+            kind: kind.to_string(),
+            payload,
+        });
         rx
     }
 
@@ -103,7 +104,11 @@ impl Requester {
         if self
             .inner
             .events
-            .send(AgentEvent::Request { id, kind: kind.to_string(), payload })
+            .send(AgentEvent::Request {
+                id,
+                kind: kind.to_string(),
+                payload,
+            })
             .is_err()
         {
             self.inner.pending.lock().unwrap().remove(&id);

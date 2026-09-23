@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use serde_json::{Value, json};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use serde_json::{json, Value};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::event::{AgentCommand, AgentEvent, StopReason};
@@ -43,6 +43,7 @@ pub struct AgentBuilder {
     max_tool_result_bytes: usize,
     working_dir: PathBuf,
     chat_options: ChatOptions,
+    system_prompt: Option<String>,
 }
 
 impl Default for AgentBuilder {
@@ -61,7 +62,14 @@ impl AgentBuilder {
             max_tool_result_bytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             chat_options: ChatOptions::default(),
+            system_prompt: None,
         }
+    }
+
+    /// 设置 system prompt（作为会话首条 system 消息，仅一次）。
+    pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
     }
 
     pub fn provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
@@ -113,11 +121,15 @@ impl AgentBuilder {
         let (cmd_tx, cmd_rx) = unbounded_channel::<AgentCommand>();
         let (evt_tx, evt_rx) = unbounded_channel::<AgentEvent>();
 
+        let mut conversation = Conversation::new();
+        if let Some(system) = self.system_prompt {
+            conversation.push(Message::system(system));
+        }
         let mut state = AgentState {
             provider,
             tools: Arc::new(self.tools),
             middleware: self.middleware,
-            conversation: Conversation::new(),
+            conversation,
             working_dir: self.working_dir,
             max_rounds: self.max_rounds,
             max_tool_result_bytes: self.max_tool_result_bytes,
@@ -446,13 +458,7 @@ impl TurnCtx {
                 let mut denied: Option<String> = None;
                 for mw in &self.middleware {
                     match mw
-                        .before(
-                            &mut live_call,
-                            risk,
-                            &tool,
-                            &self.requester,
-                            &self.cancel,
-                        )
+                        .before(&mut live_call, risk, &tool, &self.requester, &self.cancel)
                         .await
                     {
                         BeforeOutcome::Proceed | BeforeOutcome::Allow { .. } => continue,
@@ -524,14 +530,25 @@ impl TurnCtx {
     }
 }
 
+/// 不超过 `idx` 的最大 UTF-8 字符边界（兼容 MSRV 1.88；std 方法 1.91 才稳定）。
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 /// head+tail 中央截断，保证不切断 UTF-8 字符。
 fn truncate_tool_result(content: &str, max_bytes: usize) -> String {
     if content.len() <= max_bytes {
         return content.to_string();
     }
     let budget = max_bytes.saturating_sub(96) / 2;
-    let head = content.floor_char_boundary(budget);
-    let tail_from = content.floor_char_boundary(content.len() - budget);
+    let head = floor_char_boundary(content, budget);
+    let tail_from = floor_char_boundary(content, content.len() - budget);
     let omitted = tail_from - head;
     format!(
         "{}\n...[{} bytes truncated]...\n{}",

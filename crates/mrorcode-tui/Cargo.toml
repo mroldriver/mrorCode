@@ -13,6 +13,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
@@ -24,6 +25,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+mrorcode-kernel = { workspace = true, features = ["test-support"] }
+mrorcode-agent = { workspace = true }
 
 [lib]
 bench = false

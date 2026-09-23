@@ -8,10 +8,10 @@ use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
+use mrorcode_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider};
 use mrorcode_kernel::message::Message;
 use mrorcode_kernel::provider::{ChatOptions, LlmProvider, StreamEvent};
 use mrorcode_kernel::tool::ToolDef;
-use mrorcode_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider};
 
 fn provider_for(base_url: &str) -> OpenAiCompatProvider {
     OpenAiCompatProvider::new(OpenAiCompatConfig {
@@ -43,7 +43,8 @@ async fn streams_text_chunks() {
         .and(header("authorization", "Bearer test-key"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream").insert_header("cache-control", "no-cache")
+                .insert_header("content-type", "text/event-stream")
+                .insert_header("cache-control", "no-cache")
                 .set_body_string(sse_body(&[
                     r#"{"choices":[{"delta":{"content":"Hel"}}]}"#,
                     r#"{"choices":[{"delta":{"content":"lo"}}]}"#,
@@ -123,9 +124,7 @@ async fn retries_after_503_then_succeeds() {
     let server = wiremock::MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(503).insert_header("retry-after", "0"),
-        )
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -133,7 +132,8 @@ async fn retries_after_503_then_succeeds() {
         .and(path("/v1/chat/completions"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream").insert_header("cache-control", "no-cache")
+                .insert_header("content-type", "text/event-stream")
+                .insert_header("cache-control", "no-cache")
                 .set_body_string(sse_body(&[r#"{"choices":[{"delta":{"content":"ok"}}]}"#])),
         )
         .mount(&server)
@@ -149,7 +149,9 @@ async fn retries_after_503_then_succeeds() {
         .expect("retry succeeds")
         .collect()
         .await;
-    assert!(events.iter().any(|e| matches!(e, StreamEvent::TextDelta(t) if t == "ok")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta(t) if t == "ok")));
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
@@ -177,5 +179,3 @@ async fn unauthorized_is_not_retried() {
     assert!(!err.retryable);
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
-
-

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::message::ToolCall;
@@ -45,11 +45,7 @@ pub trait ToolMiddleware: Send + Sync {
     }
 
     /// 工具执行后。
-    async fn after(
-        &self,
-        _result: &mut ToolResult,
-        _tool: Option<&Arc<dyn Tool>>,
-    ) -> AfterOutcome {
+    async fn after(&self, _result: &mut ToolResult, _tool: Option<&Arc<dyn Tool>>) -> AfterOutcome {
         AfterOutcome::Proceed
     }
 }

@@ -4,8 +4,8 @@
 
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
@@ -16,9 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::AgentHandle;
 use crate::event::AgentEvent;
 use crate::message::Message;
-use crate::provider::{
-    ChatOptions, LlmProvider, ProviderResult, StreamEvent,
-};
+use crate::provider::{ChatOptions, LlmProvider, ProviderResult, StreamEvent};
 use crate::tool::{RiskLevel, Tool, ToolContext, ToolDef, ToolResult};
 
 /// 按脚本逐次响应的 provider：第 N 次 `chat_stream` 弹出第 N 个脚本。
@@ -63,9 +61,8 @@ impl LlmProvider for ScriptedProvider {
         _cancel: &'a CancellationToken,
     ) -> Pin<
         Box<
-            dyn std::future::Future<
-                    Output = ProviderResult<BoxStream<'a, StreamEvent>>,
-                > + Send
+            dyn std::future::Future<Output = ProviderResult<BoxStream<'a, StreamEvent>>>
+                + Send
                 + 'a,
         >,
     > {
@@ -137,15 +134,10 @@ pub fn text_script(text: &str) -> Vec<StreamEvent> {
 }
 
 /// 收集事件直到遇到终态（TurnComplete/Cancelled）。
-pub async fn drain_until_terminal(
-    handle: &mut AgentHandle,
-) -> Vec<AgentEvent> {
+pub async fn drain_until_terminal(handle: &mut AgentHandle) -> Vec<AgentEvent> {
     let mut out = Vec::new();
     while let Some(ev) = handle.events.recv().await {
-        let terminal = matches!(
-            ev,
-            AgentEvent::TurnComplete { .. } | AgentEvent::Cancelled
-        );
+        let terminal = matches!(ev, AgentEvent::TurnComplete { .. } | AgentEvent::Cancelled);
         out.push(ev);
         if terminal {
             break;

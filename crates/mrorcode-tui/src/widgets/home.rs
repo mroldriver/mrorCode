@@ -1,0 +1,63 @@
+//! Home 页：居中 logo + 居中输入框（宽 max(75, 70%屏宽)）。
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Widget};
+
+use crate::store::{AppState, Route};
+use crate::theme::Theme;
+use crate::widgets::prompt;
+
+pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    let body = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(3), // logo
+        Constraint::Length(1),
+        Constraint::Max(6), // prompt
+        Constraint::Length(2),
+        Constraint::Fill(1),
+    ])
+    .flex(Flex::Center)
+    .split(area);
+
+    let logo = vec![
+        Line::from(Span::styled(
+            "mrorcode",
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "a fast terminal coding agent",
+            Style::default().fg(theme.text_muted),
+        )),
+    ];
+    Paragraph::new(logo).centered().render(body[1], buf);
+
+    let pw = 75u16.min(((area.width as f32 * 0.7) as u16).max(40));
+    let ph = prompt::max_height(area.height) + 2;
+    let [prompt_area] = Layout::horizontal([Constraint::Length(pw)])
+        .flex(Flex::Center)
+        .areas(body[3]);
+    let prompt_area = Rect {
+        height: ph.min(body[3].height + 2),
+        ..prompt_area
+    };
+
+    prompt::render_prompt(state, prompt_area, buf, theme);
+
+    // 底部键位提示
+    let [footer] = Layout::horizontal([Constraint::Length(pw)])
+        .flex(Flex::Center)
+        .areas(body[4]);
+    Paragraph::new(Line::from(Span::styled(
+        "enter 发送 · ctrl+j 换行 · esc 退出",
+        Style::default().fg(theme.text_muted),
+    )))
+    .centered()
+    .render(footer, buf);
+
+    let _ = Route::Home;
+}

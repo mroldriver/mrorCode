@@ -151,10 +151,7 @@ impl Config {
             .clone()
             .or_else(|| self.providers.keys().next().cloned())
             .unwrap_or_else(|| "default".to_string());
-        let entry = self
-            .providers
-            .entry(name.clone())
-            .or_default();
+        let entry = self.providers.entry(name.clone()).or_default();
         if entry.provider_type.is_none() {
             entry.provider_type = Some("openai_compat".to_string());
         }
@@ -173,7 +170,9 @@ impl Config {
             .default_provider
             .as_deref()
             .or_else(|| self.providers.keys().next().map(String::as_str))?;
-        self.providers.get_key_value(name).map(|(k, v)| (k.as_str(), v))
+        self.providers
+            .get_key_value(name)
+            .map(|(k, v)| (k.as_str(), v))
     }
 
     /// 校验并解析为可装配的 provider。本地端点允许空 api_key。
@@ -263,7 +262,10 @@ context_window = 200000
         let mut cfg = Config::default();
         cfg.apply_environment(
             [
-                ("MRORCODE_BASE_URL".to_string(), "http://localhost:11434/v1".to_string()),
+                (
+                    "MRORCODE_BASE_URL".to_string(),
+                    "http://localhost:11434/v1".to_string(),
+                ),
                 ("MRORCODE_API_KEY".to_string(), "k".to_string()),
                 ("MRORCODE_MODEL".to_string(), "local-model".to_string()),
             ]

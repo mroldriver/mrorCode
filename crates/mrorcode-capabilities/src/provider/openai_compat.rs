@@ -18,7 +18,7 @@ use mrorcode_kernel::provider::{
 };
 use mrorcode_kernel::tool::ToolDef;
 
-use super::retry::{RetryPolicy, is_retryable_status, parse_retry_after};
+use super::retry::{is_retryable_status, parse_retry_after, RetryPolicy};
 use super::sse::SseDecoder;
 
 /// 配置。
@@ -181,7 +181,8 @@ impl OpenAiCompatProvider {
     fn auth_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
         if !self.api_key.is_empty() {
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+            if let Ok(v) =
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.api_key))
             {
                 headers.insert(reqwest::header::AUTHORIZATION, v);
             }
@@ -251,10 +252,13 @@ impl OpenAiCompatProvider {
 fn truncate_body(s: &str) -> String {
     const MAX: usize = 500;
     if s.len() <= MAX {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..s.floor_char_boundary(MAX)])
+        return s.to_string();
     }
+    let mut idx = MAX;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    format!("{}...", &s[..idx])
 }
 
 fn map_reqwest_error(e: reqwest::Error) -> ProviderError {
@@ -299,7 +303,10 @@ impl ToolCallTracker {
                 let id = if let Some(id) = self.by_index.get(&tc.index) {
                     id.clone()
                 } else {
-                    let id = tc.id.clone().unwrap_or_else(|| format!("call-{}", tc.index));
+                    let id = tc
+                        .id
+                        .clone()
+                        .unwrap_or_else(|| format!("call-{}", tc.index));
                     let name = tc.function.as_ref().and_then(|f| f.name.clone());
                     out.push(StreamEvent::ToolCallStarted {
                         id: id.clone(),
@@ -311,7 +318,10 @@ impl ToolCallTracker {
                 if let Some(func) = tc.function {
                     if let Some(args) = func.arguments {
                         if !args.is_empty() {
-                            out.push(StreamEvent::ToolCallDelta { id, arguments: args });
+                            out.push(StreamEvent::ToolCallDelta {
+                                id,
+                                arguments: args,
+                            });
                         }
                     }
                 }
@@ -423,7 +433,9 @@ impl WireRequest {
                 })
             },
             stream: true,
-            stream_options: StreamOptions { include_usage: true },
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
             temperature: options.temperature,
             max_tokens: options.max_tokens,
         }
@@ -524,11 +536,16 @@ mod tests {
     #[test]
     fn tracker_maps_content_reasoning_and_tool_fragments() {
         let mut tr = ToolCallTracker::default();
-        let evs = tr.ingest(serde_json::from_str(r#"{
+        let evs = tr.ingest(
+            serde_json::from_str(
+                r#"{
             "choices":[{"delta":{"content":"hi","reasoning_content":"think","tool_calls":[
               {"index":0,"id":"call_1","function":{"name":"bash","arguments":""}}
             ]}}]
-        }"#).unwrap());
+        }"#,
+            )
+            .unwrap(),
+        );
         assert!(matches!(&evs[0], StreamEvent::TextDelta(t) if t == "hi"));
         assert!(matches!(&evs[1], StreamEvent::Reasoning(t) if t == "think"));
         assert!(matches!(
@@ -537,12 +554,17 @@ mod tests {
         ));
 
         // 后续参数分片复用同一 id，不再重复 Started
-        let evs2 = tr.ingest(serde_json::from_str(r#"{
+        let evs2 = tr.ingest(
+            serde_json::from_str(
+                r#"{
             "choices":[{"delta":{"tool_calls":[
               {"index":0,"function":{"arguments":"{\"cmd\":"}},
               {"index":1,"id":"call_2","function":{"name":"echo","arguments":"{}"}}
             ]}}]
-        }"#).unwrap());
+        }"#,
+            )
+            .unwrap(),
+        );
         assert!(matches!(
             &evs2[0],
             StreamEvent::ToolCallDelta { id, arguments } if id == "call_1" && arguments == "{\"cmd\":"
@@ -554,11 +576,15 @@ mod tests {
     #[test]
     fn tracker_emits_usage_once() {
         let mut tr = ToolCallTracker::default();
-        let evs = tr.ingest(serde_json::from_str(r#"{
+        let evs = tr.ingest(
+            serde_json::from_str(
+                r#"{
             "choices":[],
             "usage":{"prompt_tokens":10,"completion_tokens":20}
-        }"#)
-        .unwrap());
+        }"#,
+            )
+            .unwrap(),
+        );
         assert_eq!(
             evs,
             vec![StreamEvent::Usage {
@@ -570,7 +596,7 @@ mod tests {
 
     #[test]
     fn message_wire_mapping() {
-        let msgs = vec![
+        let msgs = [
             Message::user("hi"),
             Message::assistant_tool_calls(vec![mrorcode_kernel::message::ToolCall::new(
                 "c1", "bash",
@@ -584,7 +610,10 @@ mod tests {
         let wire: Vec<WireMessage> = msgs.iter().map(Into::into).collect();
         assert_eq!(wire[0].role, "user");
         assert_eq!(wire[0].content.as_deref(), Some("hi"));
-        assert_eq!(wire[1].tool_calls.as_ref().unwrap()[0].function.name, "bash");
+        assert_eq!(
+            wire[1].tool_calls.as_ref().unwrap()[0].function.name,
+            "bash"
+        );
         assert_eq!(wire[2].role, "tool");
         assert_eq!(wire[2].tool_call_id.as_deref(), Some("c1"));
     }

@@ -4,15 +4,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::stream::{BoxStream, StreamExt, once, pending};
+use futures::stream::{once, pending, BoxStream, StreamExt};
 use serde_json::json;
 
 use mrorcode_kernel::event::AgentEvent;
-use mrorcode_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use mrorcode_kernel::message::ToolCall;
+use mrorcode_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use mrorcode_kernel::provider::{ChatOptions, LlmProvider, ProviderResult, StreamEvent};
 use mrorcode_kernel::testkit::{
-    EchoTool, ScriptedProvider, drain_until_terminal, single_tool_call_script, text_script,
+    drain_until_terminal, single_tool_call_script, text_script, EchoTool, ScriptedProvider,
 };
 use mrorcode_kernel::tool::{RiskLevel, Tool, ToolContext, ToolRegistry, ToolResult};
 use mrorcode_kernel::{AgentBuilder, AgentCommand};
@@ -99,15 +99,13 @@ impl LlmProvider for PendingProvider {
         _cancel: &'a tokio_util::sync::CancellationToken,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<
-                    Output = ProviderResult<BoxStream<'a, StreamEvent>>,
-                > + Send
+            dyn std::future::Future<Output = ProviderResult<BoxStream<'a, StreamEvent>>>
+                + Send
                 + 'a,
         >,
     > {
         Box::pin(async {
-            let s = once(async { StreamEvent::TextDelta("...".into()) })
-                .chain(pending());
+            let s = once(async { StreamEvent::TextDelta("...".into()) }).chain(pending());
             Ok(Box::pin(s) as BoxStream<'a, StreamEvent>)
         })
     }
@@ -239,7 +237,9 @@ async fn denial_is_fed_back_and_turn_continues() {
         .expect("denied result");
     assert!(denied.contains("denied"));
     // 模型拿到拒绝结果后继续完成了一轮
-    assert!(events.iter().any(|e| matches!(e, AgentEvent::TextDelta(t) if t == "after deny")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::TextDelta(t) if t == "after deny")));
 }
 
 #[tokio::test]
@@ -255,7 +255,10 @@ async fn cancel_terminates_running_turn() {
         .unwrap();
 
     // 等到首个 delta 表明轮次已运行
-    assert!(matches!(handle.events.recv().await, Some(AgentEvent::TurnStarted)));
+    assert!(matches!(
+        handle.events.recv().await,
+        Some(AgentEvent::TurnStarted)
+    ));
     assert!(matches!(
         handle.events.recv().await,
         Some(AgentEvent::TextDelta(_))

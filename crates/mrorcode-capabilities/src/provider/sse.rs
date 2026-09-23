@@ -100,10 +100,7 @@ mod tests {
     #[test]
     fn parses_data_lines_and_done() {
         let mut dec = SseDecoder::new();
-        let out = feed_all(
-            &mut dec,
-            &[b"data: {\"a\":1}\n\n", b"data: [DONE]\n\n"],
-        );
+        let out = feed_all(&mut dec, &[b"data: {\"a\":1}\n\n", b"data: [DONE]\n\n"]);
         assert_eq!(out, vec!["{\"a\":1}".to_string(), "[DONE]".to_string()]);
     }
 
@@ -136,7 +133,8 @@ mod tests {
     #[test]
     fn comment_and_field_lines_ignored() {
         let mut dec = SseDecoder::new();
-        let raw = b": ping\nevent: message\ndata: {\"k\":1}\nid: 42\nretry: 100\n\ndata: {\"k\":2}\n\n";
+        let raw =
+            b": ping\nevent: message\ndata: {\"k\":1}\nid: 42\nretry: 100\n\ndata: {\"k\":2}\n\n";
         let out = dec.feed(raw);
         assert_eq!(out, vec!["{\"k\":1}".to_string(), "{\"k\":2}".to_string()]);
     }
@@ -147,5 +145,4 @@ mod tests {
         let out = dec.feed(b"data: 1\r\ndata: 2\r\n");
         assert_eq!(out, vec!["1", "2"]);
     }
-
 }
