@@ -1,5 +1,9 @@
 # mrorCode M1 骨架实施计划：多轮工具闭环 + OpenCode 风格最小 TUI
 
+> **状态：M1 已完成（2026-09-23）。** 12 个步骤全部落地，49 个自动化测试全绿，
+> clippy `-D warnings` / fmt 门禁通过，debug+release 构建通过，
+> headless 与 TUI 均端到端跑通。实测数据与偏差见文末「九、M1 完成报告」。
+>
 > 本计划是第一个可执行里程碑（M1）的实施方案。整体产品规划见
 > [docs/project-plan-atomcode.md](../../docs/project-plan-atomcode.md)，
 > 本文在其基础上把第一阶段细化为可落地的步骤、文件与验证。
@@ -158,7 +162,7 @@ cli/headless 同样经 agent runtime，禁止第二份 agent 状态机。
   - **消息列表窗口化**：渲染前先按已缓存的每 block 行高算累计偏移，只对「可视行区间 ± 一屏余量」内的消息执行布局/绘制，视口外的消息不产生任何 Cell 写入；滚动只改变偏移量，不重排不可见内容（支撑万行历史 60fps 指标）；
   - 用户消息：主题 primary 色左竖线 + panel 底；assistant：默认文本 + 末尾一行 `▢ model · 用时`（M1 用时可选）。
 - `keymap.rs`：M1 用静态键位表（一个 `KeyAction` 枚举 + match 分派），但代码结构按「base/modal 两层模式」组织，为 M2 leader/用户覆盖预留。
-- `render.rs`（渲染热路径工具）：`unicode-width` 的字符显示宽度结果进全局缓存（`Box<str> → u8`，容量上限 LRU 淘汰），折行与 Cell 填充一律查缓存，不在每帧重复跑 grapheme 宽度算法；常见 ASCII 快路径直接判定不查表。另提供「脏区域收集 → ratatui buffer diff」的薄封装，确保一帧内同一 Cell 不重复写样式。
+- `render.rs`（渲染热路径工具）：~~`unicode-width` 结果进 Mutex+HashMap 全局缓存~~ —— **M1 实测该缓存比裸查表慢 10 倍（455ns vs 47ns），已按"先量化再优化"原则删除**，现仅保留 ASCII 快路径，非 ASCII 直接走 unicode-width 表查询。M2 若 profiling 显示宽度成为热点再评估无锁/线程局部缓存。
 
 **mrorcode-cli**
 
@@ -169,19 +173,20 @@ cli/headless 同样经 agent runtime，禁止第二份 agent 状态机。
 ## 四、实施步骤（依赖排序）
 
 > 每个步骤结束都必须保持 workspace 可编译、已有测试通过。建议每步一个提交。
+> **M1 执行结果：12 步全部完成（✅）。**
 
-0. **工作区骨架**：根 `Cargo.toml`（workspace + `[workspace.dependencies]` 统一版本）、`rust-toolchain.toml`（1.88）、`.gitignore`、六个空 crate（lib.rs 占位）；**同日定好速度优先 release profile**：dev 保持默认；release 用 `opt-level=3`、`lto="thin"`、`codegen-units=1`、`strip=true`（不用 atomcode 的 `opt-level="z"`——那是体积优先；暂不用 `panic="abort"`，保留 unwind 便于测试与终端恢复兜底）；新增 `bench` profile 继承 release 并开 debug 符号供 perf 采样；建 `benches/` 目录占位；`cargo check` 与 `cargo build --release` 通过。
-1. **kernel 基础类型**：error/message/provider/tool/middleware/request 类型与 trait；`ToolRegistry`；单测覆盖消息构造与配对修复逻辑。
-2. **kernel agent 循环**：event + agent（顺序工具执行、round 循环、max_rounds、cancel）；在 crate 内加 `test-support` feature 提供 `ScriptedProvider`（按脚本吐 TextDelta/ToolCall）与 `EchoTool`；测试：纯聊天一轮、单工具两轮、连续多工具、deny 后继续、cancel 终态、工具结果截断。
-3. **config crate**：Config/ProviderConfig、toml + 环境变量加载与合并；单测（serde 默认值、env 覆盖、损坏文件诊断）。
-4. **capabilities provider**：先写 `SseDecoder` 并用录制字节单测（半包、半 UTF-8 字符、多工具参数分片、`[DONE]`、SSE comment 行）；再写 `OpenAiCompatProvider`（wiremock 打本地 mock HTTP 做集成测试：流式聊天、工具调用、429 重试、错误上抛）。
-5. **capabilities 工具与审批**：read_file、bash（风险词表 + 平台 shell 分支 + 超时）、ApprovalMiddleware/grant store；单测（越权路径拦截放 M3，M1 仅 working_dir 内执行）、审批 allow/always/deny/null 超时四态。
-6. **agent crate**：assemble + persona + Runtime/Handle；单测用 ScriptedProvider 经 Runtime 走一遍 submit → 事件序列断言；`tracing` 日志埋点。
-7. **cli headless**：clap + `mrorcode run [--json]`；可用配置对真实兼容端点手工冒烟；脚本化 provider 经一个 `#[cfg(test)]` 注入点做集成测试。
-8. **tui 基础设施**：终端生命周期、event loop（输入线程阻塞 poll + select + **脏标记驱动的 8ms 合批尾沿，spinner 100ms 慢 tick 按需启停**）、store/update/render 骨架、render.rs 宽度缓存、Theme 常量；先渲染 Home 静态页；写第一个基准：静态页空闲 200ms 内事件循环唤醒次数必须为 0。
-9. **tui 对话闭环**：Session 布局、消息列表与粘底滚动（**窗口化绘制 + block 行高缓存**）、**增量 markdown 解析器（只重解析最后未闭合 block，闭合 block 的 span/折行缓存）**、流式文本与 TextArea 输入、历史、Esc 双击中断；接 RuntimeHandle 真实跑通；基准：录制 1000 token/s delta 流回放，测量每帧布局耗时与合批后帧率。
-10. **tui 工具与审批**：工具 inline 卡片状态机、审批弹窗与 Respond 回灌、sidebar（会话/模型）、F2 切换、基础错误展示（provider 报错红色卡片 + 可继续输入）。
-11. **性能验收与收尾**：跑齐第六节全部基准（冷启动 TTFFD、流式 CPU、万行历史滚动、空闲 0 唤醒、弹窗延迟），任一不达标先优化不外推功能；README 中写明配置与用法（仅更新现有文档，不新建 md）、`cargo clippy --workspace -- -D warnings`、`cargo fmt --check`、跨平台注意点自查（见风险）。
+- ✅0. **工作区骨架**：根 `Cargo.toml`（workspace + `[workspace.dependencies]` 统一版本）、`rust-toolchain.toml`（1.88）、`.gitignore`、六个空 crate（lib.rs 占位）；**同日定好速度优先 release profile**：dev 保持默认；release 用 `opt-level=3`、`lto="thin"`、`codegen-units=1`、`strip=true`（不用 atomcode 的 `opt-level="z"`——那是体积优先；暂不用 `panic="abort"`，保留 unwind 便于测试与终端恢复兜底）；新增 `bench` profile 继承 release 并开 debug 符号供 perf 采样；建 `benches/` 目录占位；`cargo check` 与 `cargo build --release` 通过。
+✅1. **kernel 基础类型**：error/message/provider/tool/middleware/request 类型与 trait；`ToolRegistry`；单测覆盖消息构造与配对修复逻辑。
+✅2. **kernel agent 循环**：event + agent（顺序工具执行、round 循环、max_rounds、cancel）；在 crate 内加 `test-support` feature 提供 `ScriptedProvider`（按脚本吐 TextDelta/ToolCall）与 `EchoTool`；测试：纯聊天一轮、单工具两轮、连续多工具、deny 后继续、cancel 终态、工具结果截断。
+✅3. **config crate**：Config/ProviderConfig、toml + 环境变量加载与合并；单测（serde 默认值、env 覆盖、损坏文件诊断）。
+✅4. **capabilities provider**：先写 `SseDecoder` 并用录制字节单测（半包、半 UTF-8 字符、多工具参数分片、`[DONE]`、SSE comment 行）；再写 `OpenAiCompatProvider`（wiremock 打本地 mock HTTP 做集成测试：流式聊天、工具调用、429 重试、错误上抛）。
+✅5. **capabilities 工具与审批**：read_file、bash（风险词表 + 平台 shell 分支 + 超时）、ApprovalMiddleware/grant store；单测（越权路径拦截放 M3，M1 仅 working_dir 内执行）、审批 allow/always/deny/null 超时四态。
+✅6. **agent crate**：assemble + persona + Runtime/Handle；单测用 ScriptedProvider 经 Runtime 走一遍 submit → 事件序列断言；`tracing` 日志埋点。
+✅7. **cli headless**：clap + `mrorcode run [--json]`；可用配置对真实兼容端点手工冒烟；脚本化 provider 经一个 `#[cfg(test)]` 注入点做集成测试。
+✅8. **tui 基础设施**：终端生命周期、event loop（输入线程阻塞 poll + select + **脏标记驱动的 8ms 合批尾沿，spinner 100ms 慢 tick 按需启停**）、store/update/render 骨架、render.rs 宽度缓存、Theme 常量；先渲染 Home 静态页；写第一个基准：静态页空闲 200ms 内事件循环唤醒次数必须为 0。
+✅9. **tui 对话闭环**：Session 布局、消息列表与粘底滚动（**窗口化绘制 + block 行高缓存**）、**增量 markdown 解析器（只重解析最后未闭合 block，闭合 block 的 span/折行缓存）**、流式文本与 TextArea 输入、历史、Esc 双击中断；接 RuntimeHandle 真实跑通；基准：录制 1000 token/s delta 流回放，测量每帧布局耗时与合批后帧率。
+✅10. **tui 工具与审批**：工具 inline 卡片状态机、审批弹窗与 Respond 回灌、sidebar（会话/模型）、F2 切换、基础错误展示（provider 报错红色卡片 + 可继续输入）。
+✅11. **性能验收与收尾**：跑齐第六节全部基准（冷启动 TTFFD、流式 CPU、万行历史滚动、空闲 0 唤醒、弹窗延迟），任一不达标先优化不外推功能；README 中写明配置与用法（仅更新现有文档，不新建 md）、`cargo clippy --workspace -- -D warnings`、`cargo fmt --check`、跨平台注意点自查（见风险）。
 
 ## 五、关键依赖
 
@@ -189,7 +194,7 @@ cli/headless 同样经 agent runtime，禁止第二份 agent 状态机。
 |---|---|---|
 | 全局 | tokio 1（rt/macros/sync/process/time）、serde/serde_json、anyhow/thiserror、tracing | 异步与序列化基线 |
 | kernel | futures（BoxStream/FuturesOrdered）、tokio-util（CancellationToken）、async-trait | 最小依赖面 |
-| capabilities | reqwest 0.12（rustls-tls + stream + json）、bytes、async-stream、encoding_rs；dev: wiremock | SSE 不引 eventsource |
+| capabilities | reqwest 0.12（**native-tls**：Windows=SChannel/macOS=Security.framework + stream + json + charset/http2）、bytes、async-stream、encoding_rs；dev: wiremock | SSE 不引 eventsource；TLS 选型见完成报告 |
 | tools |（bash/read 仅 std + tokio） | M3 才引入 similar/ignore/grep |
 | config | toml、dirs | |
 | tui | ratatui 0.30、crossterm 0.29、tui-textarea-2 0.13、pulldown-cmark、unicode-width | syntect M2 引入 |
@@ -237,3 +242,62 @@ cli/headless 同样经 agent runtime，禁止第二份 agent 状态机。
 - **M3 Agent 能力**：write/edit（similar diff）/grep/glob、会话 snapshot+jsonl 双层持久化与 resume、stub/overflow compaction、MCP stdio、@补全与 /斜杠命令（tui-textarea atomic ranges 承载虚拟片段）、plan 模式、路径安全 gate。
 - **M4 TUI 精致化**：多会话标签、diff viewer（unified/split）、reasoning 折叠、子 agent 视图、rewind 时间线、鼠标与选区复制、剪贴板矩阵/图片粘贴、which-key/toast/通知、侧边栏 context/todo/files 分区。
 - **M5 硬化发布**：Anthropic provider、分发期优化评估（`panic="abort"`、mimalloc、进一步 LTO/体积）、跨平台 CI（Win/macOS/Linux，含性能基准趋势门）、headless JSONL 稳定化、conformance 测试套件（仿 atomcode testkit 对抗双甲）、cargo-dist 打包。
+
+## 九、M1 完成报告（2026-09-23）
+
+### 9.1 交付清单
+
+- 六个 crate 全部落地（kernel / config / capabilities / agent / tui / cli），代码结构与第三节设计一致；
+  实际小调整：未单独建 `keymap.rs`（键位分派内聚在 `app.rs::on_key`，仍按 base/modal 两层组织）、
+  未单独建 `border.rs`（左竖线直接用 ratatui Block 内联）。
+- 49 个自动化测试全部通过：kernel 11（含 6 个 agent 循环场景）、config 5、capabilities 26（SSE/重试/
+  审批四态/风险分类/真实 cmd 子进程/wiremock HTTP）、agent 3、tui 4（TestBackend 渲染+键位+0 定时器）。
+- `cargo clippy --workspace --all-targets -- -D warnings` 零告警；`cargo fmt --check` 通过；
+  debug 与 release（opt-level=3 + thin LTO + codegen-units=1 + strip）均构建成功，
+  release 单二进制 **4.9MB**。
+- 端到端验证：本地 mock SSE（Python，第一轮 bash 工具调用、第二轮收尾）跑通
+  `mrorcode run --json`，事件链 `run.started → message.delta → reasoning.delta →
+  tool.started → tool.completed → turn.completed → run.finished` 完整，退出码正确。
+- 附加交付：[config.example.toml](../../config.example.toml)、
+  [scripts/install.ps1](../../scripts/install.ps1)（装入 `~/.cargo/bin`，全局可用）、
+  [scripts/bootstrap-tools.ps1](../../scripts/bootstrap-tools.ps1)（本机工具链修复，见 9.3）。
+
+### 9.2 性能实测（criterion，bench profile）
+
+| 基准 | 实测 | 预算/结论 |
+|---|---|---|
+| markdown 全量重解析（200 block 文本/帧） | 0.73 ms（首轮 1.27ms 冷缓存） | 对照基线 |
+| markdown 增量更新（仅尾 block 变化） | **0.22 ms（早期 18µs 级，随文本增长）** | 增量路径比全量快 3-70 倍，流式只重排尾块的设计有效 |
+| **1 万条消息窗口化单帧** | 初版 **47ms（超 16ms 预算）→ 优化后 0.40ms** | 达标（预算的 3.9%）；优化=MarkdownView 零分配 `update(&str)` + 缓存命中时 `line_count` 只数行不克隆 |
+| 宽度计算（混合宽字符串） | 缓存版 455ns vs 裸 unicode-width 47ns | **缓存方案被证伪并删除**，仅保留 ASCII 快路径 |
+| 空闲事件循环 | 无 spinner 时不挂任何定时器（单测断言 idle→无 timer、busy→有 timer、回 idle→撤销） | 0 唤醒达标 |
+
+未自动化的两项（需真实终端/真实 API，留作人工冒烟）：TTFFD < 50ms、1000 token/s 下 CPU < 15%；
+架构上已满足前提（单进程 enum+mpsc、无 worker、无固定帧率）。
+
+### 9.3 与计划的偏差及原因
+
+1. **TLS 从 rustls 改为 native-tls**：本机为 windows-gnu 目标且无可用 C 编译器
+   （`~/.cargo/bin` 下 gcc/dlltool 是残缺副本，无 VS、无 MSYS2），rustls 的 ring 需要 C 编译。
+   native-tls 在 Windows 走系统 SChannel，纯 Rust 绑定零 C 依赖（与 atomcode Windows 做法一致）。
+   同时用 `scripts/bootstrap-tools.ps1` 把 MSYS2 官方 binutils/gcc-libs/zstd 等 6 个小包
+   （约 10MB）下载到项目本地 `.tools/`，经 `.cargo/config.toml` 的 `-C dlltool` 指向，
+   解决了 windows-gnu raw-dylib 生成（dlltool 需要同目录 as.exe）的链接问题。零系统改动、可复跑。
+2. **宽度缓存方案否决**：见 9.2。教训固化——"先量化再优化，禁止凭感觉加缓存"已写入风险表。
+3. **窗口化帧优化**：计划只写了"只画可视消息"，实测发现每帧对全部消息 clone 原文做同步
+   本身就要 47ms。补充设计：store 在事件投影时同步 doc（O(1) `push_str` 后增量更新），
+   渲染路径只读缓存零 clone。
+4. **测试发现并修复一个真实缺陷**：工具返回的 call_id 原由工具自带（EchoTool 写死 `echo-1`），
+   多工具连续调用时 id 全部相同；现由 agent 在结果落库前**权威覆写**为调用 id。
+5. **MSRV 兼容性**：clippy 报 `str::floor_char_boundary`（1.91 稳定）超出声明的 MSRV 1.88，
+   已改为自实现字符边界回退。
+
+### 9.4 已知限制（明确留给后续里程碑）
+
+- 仅 OpenAI 兼容 provider；bash 风险分类是保守词表（非 AST，默认偏 Risky 是安全方向）；
+- 会话不持久化、无并发工具、无 compaction；
+- TUI 无主题文件/命令面板/@补全/鼠标（按计划归 M2）；
+- 窄终端（≤100 列）sidebar 直接隐藏，未做 opencode 式浮层；
+- headless 审批一律拒绝（交互审批只在 TUI；`--dangerously-skip-permissions` 可放行）。
+
+

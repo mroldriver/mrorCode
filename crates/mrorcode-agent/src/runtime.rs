@@ -1,6 +1,7 @@
 //! 编码运行时：driver 与 kernel agent 之间的薄桥。
 //!
 //! 唯一 agent 状态所有者是 kernel；这里只做命令/事件桥接，不建第二份状态机。
+//! 事件按当前 turn 所属 session 标记，供 TUI 投影到对应会话。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,10 +14,11 @@ use mrorcode_kernel::tool::ToolRegistry;
 use mrorcode_kernel::AgentBuilder;
 use mrorcode_kernel::ToolMiddleware;
 
-/// driver → runtime 的命令（M1 精简集）。
+/// driver → runtime 的命令（M2：多会话 + 模型切换）。
 #[derive(Clone, Debug)]
 pub enum DriverCommand {
-    Submit(String),
+    Submit { session_id: u64, text: String },
+    SetModel(String),
     Respond(u64, Value),
     Cancel,
     Shutdown,
@@ -25,7 +27,10 @@ pub enum DriverCommand {
 /// runtime → driver 的事件。
 #[derive(Clone, Debug)]
 pub enum RuntimeEvent {
-    Agent(AgentEvent),
+    Agent {
+        session_id: u64,
+        event: AgentEvent,
+    },
     /// runtime 已退出（终态）。
     Exited,
 }
@@ -37,8 +42,15 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub fn submit(&self, text: impl Into<String>) {
-        let _ = self.commands.send(DriverCommand::Submit(text.into()));
+    pub fn submit(&self, session_id: u64, text: impl Into<String>) {
+        let _ = self.commands.send(DriverCommand::Submit {
+            session_id,
+            text: text.into(),
+        });
+    }
+
+    pub fn set_model(&self, model: impl Into<String>) {
+        let _ = self.commands.send(DriverCommand::SetModel(model.into()));
     }
 
     pub fn respond(&self, id: u64, value: Value) {
@@ -61,25 +73,32 @@ pub struct RuntimeStart {
     pub middleware: Vec<Arc<dyn ToolMiddleware>>,
     pub working_dir: PathBuf,
     pub system_prompt: String,
+    /// 启动即生效的模型覆盖（如 KV 中记住的选择）。
+    pub model: Option<String>,
 }
 
 /// 启动 runtime，返回控制句柄与事件接收端。
 pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEvent>) {
-    let agent = AgentBuilder::new()
+    let mut builder = AgentBuilder::new()
         .provider(start.provider)
         .tools(start.tools)
         .system_prompt(start.system_prompt)
         .working_dir(start.working_dir);
-    let agent = start
-        .middleware
-        .into_iter()
-        .fold(agent, |a, mw| a.add_middleware(mw));
-    let mut agent_handle = agent.spawn();
+    if let Some(model) = start.model {
+        let options = mrorcode_kernel::ChatOptions {
+            model: Some(model),
+            ..Default::default()
+        };
+        builder = builder.chat_options(options);
+    }
+    let mut agent_handle = builder.spawn();
 
     let (cmd_tx, mut cmd_rx) = unbounded_channel::<DriverCommand>();
     let (evt_tx, evt_rx) = unbounded_channel::<RuntimeEvent>();
 
     tokio::spawn(async move {
+        // 当前 turn 所属会话；无 turn 时事件不会产生
+        let mut active_session: u64 = 0;
         loop {
             tokio::select! {
                 biased;
@@ -88,15 +107,25 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
                     match cmd {
                         None | Some(DriverCommand::Shutdown) => {
                             let _ = agent_handle.commands.send(AgentCommand::Shutdown);
-                            // 排空事件直到 agent 关闭
                             while let Some(ev) = agent_handle.events.recv().await {
-                                let _ = evt_tx.send(RuntimeEvent::Agent(ev));
+                                let _ = evt_tx.send(RuntimeEvent::Agent {
+                                    session_id: active_session,
+                                    event: ev,
+                                });
                             }
                             let _ = evt_tx.send(RuntimeEvent::Exited);
                             break;
                         }
-                        Some(DriverCommand::Submit(text)) => {
-                            let _ = agent_handle.commands.send(AgentCommand::SendMessage(text));
+                        Some(DriverCommand::Submit { session_id, text }) => {
+                            active_session = session_id;
+                            let _ = agent_handle
+                                .commands
+                                .send(AgentCommand::Submit { session_id, text });
+                        }
+                        Some(DriverCommand::SetModel(model)) => {
+                            let _ = agent_handle
+                                .commands
+                                .send(AgentCommand::SetModel(model));
                         }
                         Some(DriverCommand::Respond(id, value)) => {
                             let _ = agent_handle.commands.send(AgentCommand::Respond(id, value));
@@ -109,8 +138,14 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
 
                 ev = agent_handle.events.recv() => {
                     match ev {
-                        Some(ev) => {
-                            if evt_tx.send(RuntimeEvent::Agent(ev)).is_err() {
+                        Some(event) => {
+                            if evt_tx
+                                .send(RuntimeEvent::Agent {
+                                    session_id: active_session,
+                                    event,
+                                })
+                                .is_err()
+                            {
                                 break;
                             }
                         }

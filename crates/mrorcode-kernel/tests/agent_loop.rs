@@ -121,7 +121,10 @@ async fn single_turn_plain_chat() {
 
     handle
         .commands
-        .send(AgentCommand::SendMessage("hi".into()))
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "hi".into(),
+        })
         .unwrap();
     let events = drain_until_terminal(&mut handle).await;
 
@@ -155,7 +158,10 @@ async fn single_tool_takes_two_rounds() {
 
     handle
         .commands
-        .send(AgentCommand::SendMessage("use echo".into()))
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "use echo".into(),
+        })
         .unwrap();
     let events = drain_until_terminal(&mut handle).await;
 
@@ -192,7 +198,10 @@ async fn multiple_tools_run_in_order() {
 
     handle
         .commands
-        .send(AgentCommand::SendMessage("two echoes".into()))
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "two echoes".into(),
+        })
         .unwrap();
     let events = drain_until_terminal(&mut handle).await;
 
@@ -220,7 +229,10 @@ async fn denial_is_fed_back_and_turn_continues() {
 
     handle
         .commands
-        .send(AgentCommand::SendMessage("deny me".into()))
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "deny me".into(),
+        })
         .unwrap();
     let events = drain_until_terminal(&mut handle).await;
 
@@ -251,7 +263,10 @@ async fn cancel_terminates_running_turn() {
 
     handle
         .commands
-        .send(AgentCommand::SendMessage("go".into()))
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "go".into(),
+        })
         .unwrap();
 
     // 等到首个 delta 表明轮次已运行
@@ -272,6 +287,101 @@ async fn cancel_terminates_running_turn() {
     assert!(matches!(terminal, AgentEvent::Cancelled));
 }
 
+/// 记录每次请求消息数与模型覆盖的 provider。
+type RecCalls = Arc<tokio::sync::Mutex<Vec<(usize, Option<String>)>>>;
+
+#[derive(Clone)]
+struct RecordingProvider {
+    calls: RecCalls,
+}
+
+#[async_trait]
+impl LlmProvider for RecordingProvider {
+    fn model_name(&self) -> &str {
+        "base-model"
+    }
+
+    fn chat_stream<'a>(
+        &'a self,
+        _messages: &'a [mrorcode_kernel::Message],
+        _tools: &'a [mrorcode_kernel::ToolDef],
+        options: &'a ChatOptions,
+        _cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = ProviderResult<BoxStream<'a, StreamEvent>>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let calls = Arc::clone(&self.calls);
+        let n = _messages.len();
+        let model = options.model.clone();
+        Box::pin(async move {
+            calls.lock().await.push((n, model));
+            Ok(Box::pin(futures::stream::once(async {
+                StreamEvent::TextDelta("ok".into())
+            })) as BoxStream<'a, StreamEvent>)
+        })
+    }
+}
+
+async fn submit_and_wait(handle: &mut mrorcode_kernel::AgentHandle, session_id: u64, text: &str) {
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id,
+            text: text.into(),
+        })
+        .unwrap();
+    let _ = drain_until_terminal(handle).await;
+}
+
+#[tokio::test]
+async fn sessions_keep_isolated_conversations() {
+    let provider = RecordingProvider {
+        calls: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+    };
+    let calls = Arc::clone(&provider.calls);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .system_prompt("sys")
+        .spawn();
+
+    // 会话1：system + user1 → 2 条
+    submit_and_wait(&mut handle, 1, "from-one").await;
+    // 会话2：system + user2（不应包含 from-one）→ 2 条
+    submit_and_wait(&mut handle, 2, "from-two").await;
+    // 回到会话1：system + user1 + assistant1 + user3 → 4 条（不含 from-two）
+    submit_and_wait(&mut handle, 1, "again-one").await;
+
+    let recorded = calls.lock().await.clone();
+    assert_eq!(recorded.len(), 3);
+    assert_eq!(recorded[0].0, 2);
+    assert_eq!(recorded[1].0, 2);
+    assert_eq!(recorded[2].0, 4);
+}
+
+#[tokio::test]
+async fn set_model_takes_effect_on_next_turn() {
+    let provider = RecordingProvider {
+        calls: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+    };
+    let calls = Arc::clone(&provider.calls);
+    let mut handle = AgentBuilder::new().provider(Arc::new(provider)).spawn();
+
+    submit_and_wait(&mut handle, 1, "first").await;
+    handle
+        .commands
+        .send(AgentCommand::SetModel("other-model".into()))
+        .unwrap();
+    submit_and_wait(&mut handle, 1, "second").await;
+
+    let recorded = calls.lock().await.clone();
+    assert_eq!(recorded[0].1, None);
+    assert_eq!(recorded[1].1.as_deref(), Some("other-model"));
+}
+
 #[tokio::test]
 async fn tool_result_is_truncated_head_tail() {
     let mut reg = ToolRegistry::new();
@@ -288,7 +398,10 @@ async fn tool_result_is_truncated_head_tail() {
 
     handle
         .commands
-        .send(AgentCommand::SendMessage("big".into()))
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "big".into(),
+        })
         .unwrap();
     let events = drain_until_terminal(&mut handle).await;
 

@@ -80,6 +80,8 @@ pub type ProviderResult<T> = Result<T, ProviderError>;
 /// 请求选项——内核只转发，不做策略。
 #[derive(Clone, Debug, Default)]
 pub struct ChatOptions {
+    /// 每轮模型覆盖（None 时用 provider 自带模型）。SetModel 后下一轮生效。
+    pub model: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub tool_choice: ToolChoice,

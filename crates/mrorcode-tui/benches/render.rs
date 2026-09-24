@@ -56,10 +56,54 @@ fn width_cache(c: &mut Criterion) {
     });
 }
 
+fn theme_parse_all(c: &mut Criterion) {
+    c.bench_function("theme/parse_33_bundled", |b| {
+        b.iter(|| {
+            for (_, json) in mrorcode_tui::bench_support::bundled_themes() {
+                black_box(mrorcode_tui::bench_support::parse_theme_dark(json));
+            }
+        })
+    });
+}
+
+fn syntax_highlight(c: &mut Criterion) {
+    // 200 行合成 Rust 源码（注释/字符串/数字/函数等 token 混合）
+    let source: String = (0..200)
+        .map(|i| {
+            format!(
+                "// line {i}\nfn item_{i}(n: u64) -> u64 {{\n    let s = \"value {i}\";\n    n + {i} * 3\n}}\n"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    c.bench_function("syntax/highlight_rust_200_lines", |b| {
+        b.iter(|| {
+            black_box(bench_support::highlight_rust(black_box(&source)));
+        })
+    });
+}
+
+fn fuzzy_filter(c: &mut Criterion) {
+    // 条目池在计时外构造；只测过滤本身
+    let pool = bench_support::fuzzy_pool(10_000);
+    c.bench_function("fuzzy/filter_10000_items", |b| {
+        b.iter(|| {
+            black_box(bench_support::fuzzy_filter_count(
+                black_box("swtm"),
+                black_box(pool.iter()),
+            ));
+        })
+    });
+}
+
 criterion_group!(
     benches,
     markdown_incremental,
     long_history_scroll,
-    width_cache
+    width_cache,
+    theme_parse_all,
+    syntax_highlight,
+    fuzzy_filter
 );
 criterion_main!(benches);

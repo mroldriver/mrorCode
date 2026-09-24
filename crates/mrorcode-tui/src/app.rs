@@ -16,7 +16,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Widget};
 use ratatui::{Frame, Terminal};
 use std::pin::Pin;
@@ -25,9 +25,11 @@ use tokio::time::{Interval, Sleep};
 
 use mrorcode_agent::{Assembly, RuntimeEvent};
 
+use crate::commands::{self, AppCommand};
 use crate::store::{AppState, Route};
 use crate::theme::Theme;
-use crate::widgets::{home, permission, prompt, session, sidebar};
+use crate::widgets::dialog::{self, DialogOutcome, SelectPurpose};
+use crate::widgets::{home, permission, prompt, session, sidebar, toast};
 
 const RENDER_COALESCE: Duration = Duration::from_millis(8);
 const SPINNER_TICK: Duration = Duration::from_millis(100);
@@ -38,15 +40,29 @@ pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
         handle,
         mut events,
         model,
+        available_models,
     } = assembly;
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let mut terminal = setup_terminal()?;
     install_panic_restore();
 
-    let mut state = AppState::new(model, working_dir);
-    let theme = Theme::tokyonight();
-    prompt::style_textarea(&mut state, &theme);
+    let (kv, kv_warnings) = crate::storage::Store::load();
+    for w in kv_warnings {
+        tracing::warn!("state: {w}");
+    }
+
+    // KV 中记住的模型选择：AppState 已恢复为初始模型；
+    // 若与 config 默认模型不同，补发 SetModel（kernel 下一轮生效）
+    let assembly_model = model.clone();
+    let mut state = AppState::new(model, available_models, working_dir, kv);
+    if state.model != assembly_model {
+        let m = state.model.clone();
+        handle.set_model(m.clone());
+        state.toast(format!("模型：{m}（下一轮生效）"));
+    }
+    let initial_theme = state.theme.clone();
+    prompt::style_textarea(&mut state, &initial_theme);
 
     let (_input_thread, mut key_rx) = spawn_input_thread();
 
@@ -55,7 +71,7 @@ pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
     let mut dirty = true; // 首帧必画
 
     let result: io::Result<()> = loop {
-        ensure_spinner(&mut spinner, &state);
+        ensure_wake(&mut spinner, &state);
         tokio::select! {
             biased;
 
@@ -72,14 +88,16 @@ pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
 
             ev = events.recv() => {
                 match ev {
-                    Some(RuntimeEvent::Agent(agent_ev)) => {
-                        state.on_runtime_event(agent_ev, &handle);
+                    Some(RuntimeEvent::Agent { session_id, event: agent_ev }) => {
+                        state.on_runtime_event(session_id, agent_ev, &handle);
                         dirty = true;
                     }
-                    Some(RuntimeEvent::Exited) | None => {
-                        state.set_notice("runtime exited");
+                    Some(RuntimeEvent::Exited) => {
+                        state.toast("runtime exited");
                         dirty = true;
                     }
+                    // 通道关闭：runtime 已终止，退出主循环，避免空转
+                    None => break Ok(()),
                 }
             }
 
@@ -90,7 +108,10 @@ pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
                     std::future::pending::<()>().await;
                 }
             }, if spinner.is_some() => {
-                state.spinner_ticks = state.spinner_ticks.wrapping_add(1);
+                if state.phase.is_busy() {
+                    state.spinner_ticks = state.spinner_ticks.wrapping_add(1);
+                }
+                state.gc_toasts();
                 dirty = true;
             }
 
@@ -104,7 +125,7 @@ pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
                 if state.should_quit {
                     break Ok(());
                 }
-                if let Err(e) = terminal.draw(|f| draw(f, &mut state, &theme)) {
+                if let Err(e) = terminal.draw(|f| draw(f, &mut state)) {
                     break Err(e);
                 }
                 render_due = None;
@@ -158,37 +179,89 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
         return true;
     }
 
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if input_is_empty(state) {
-                state.should_quit = true;
-            } else {
-                state.prompt.select_all();
-                state.prompt.delete_char();
+    // modal 层：对话框栈顶吃键，base 层不参与
+    if !state.dialogs.is_empty() {
+        let outcome = dialog::key_top(state.dialogs.last_mut().unwrap(), key);
+        return match outcome {
+            DialogOutcome::None => true,
+            DialogOutcome::Closed => {
+                state.pop_dialog();
+                true
             }
+            DialogOutcome::Accepted(purpose, value) => {
+                state.pop_dialog();
+                apply_select(state, purpose, value, handle);
+                true
+            }
+            DialogOutcome::Confirmed(action) => {
+                state.pop_dialog();
+                apply_confirm(state, action);
+                true
+            }
+        };
+    }
+
+    // Esc 先解除工具卡焦点，再走中断/退出（在 keymap 之前拦截）
+    if state.focused_tool.is_some() && key.code == KeyCode::Esc {
+        state.clear_tool_focus();
+        return true;
+    }
+
+    let now = std::time::Instant::now();
+    let leader_active = state.leader_active(now);
+
+    // ctrl+x 触发 leader；窗口内的 ctrl+x 当作未识别第二键处理
+    let is_leader_trigger =
+        key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_leader_trigger && !leader_active {
+        state.arm_leader(now);
+        state.toast("leader… 2s 内按组合键");
+        return true;
+    }
+
+    // base 层统一走键位表（用户覆盖在此生效）
+    if let Some(action) = state
+        .keymap
+        .resolve(crate::keymap::Layer::Base, key, leader_active)
+    {
+        if leader_active {
+            state.clear_leader();
+        }
+        if apply_action(state, action, handle) {
             return true;
         }
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        // 动作声明未消费（如历史浏览光标不在边界）：落给输入框
+    } else if leader_active {
+        // leader 第二键无绑定：清窗口并吞键，避免误输入/误退出
+        state.clear_leader();
+        return true;
+    }
+
+    // 普通编辑键交给 textarea
+    state.esc_first = None;
+    state.prompt.input(*key)
+}
+
+/// 执行 base 层键位动作；返回 false 表示未消费（按键继续交给 textarea）。
+fn apply_action(
+    state: &mut AppState,
+    action: crate::keymap::Action,
+    handle: &mrorcode_agent::RuntimeHandle,
+) -> bool {
+    use crate::keymap::Action::*;
+    match action {
+        Submit => {
+            // 焦点在工具卡上时 Enter 展开/收起，否则发送
+            if state.toggle_focused_tool() {
+                return true;
+            }
+            state.submit_prompt(handle)
+        }
+        Newline => {
             state.prompt.insert_newline();
-            return true;
+            true
         }
-        KeyCode::F(2) => {
-            state.sidebar = !state.sidebar;
-            return true;
-        }
-        KeyCode::PageUp => {
-            if state.route == Route::Session {
-                state.scroll_up(state.viewport_lines / 2 + 1);
-                return true;
-            }
-        }
-        KeyCode::PageDown => {
-            if state.route == Route::Session {
-                state.scroll_down(state.viewport_lines / 2 + 1);
-                return true;
-            }
-        }
-        KeyCode::Esc => {
+        CancelOrClear => {
             if state.phase.is_busy() {
                 let now = std::time::Instant::now();
                 let double = state
@@ -197,47 +270,161 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
                 if double {
                     handle.cancel();
                     state.esc_first = None;
-                    state.set_notice("正在中断…");
+                    state.toast("正在中断…");
                 } else {
                     state.esc_first = Some(now);
-                    state.set_notice("再按一次 Esc 中断");
+                    state.toast("再按一次 Esc 中断");
                 }
-                return true;
             } else {
                 state.should_quit = true;
-                return true;
+            }
+            true
+        }
+        Quit => {
+            // 输入非空时先清空（M1 行为），再次 ctrl+c 才退出
+            if input_is_empty(state) {
+                state.should_quit = true;
+            } else {
+                state.prompt.select_all();
+                state.prompt.delete_char();
+            }
+            true
+        }
+        ScrollUp => {
+            if state.route == Route::Session {
+                state.scroll_up(state.viewport_lines / 2 + 1);
+                true
+            } else {
+                false
             }
         }
-        KeyCode::Enter => {
-            // Alt/Shift/Ctrl+Enter 换行
-            if key
-                .modifiers
-                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::CONTROL)
-            {
-                state.prompt.insert_newline();
-                return true;
-            }
-            if state.submit_prompt(handle) {
-                return true;
-            }
-            return false;
-        }
-        KeyCode::Up | KeyCode::Down => {
-            if history_key(state, key.code) {
-                return true;
+        ScrollDown => {
+            if state.route == Route::Session {
+                state.scroll_down(state.viewport_lines / 2 + 1);
+                true
+            } else {
+                false
             }
         }
-        _ => {
-            state.esc_first = None;
+        HistoryPrev => history_key(state, KeyCode::Up),
+        HistoryNext => history_key(state, KeyCode::Down),
+        FocusNextTool => {
+            state.cycle_tool_focus(true);
+            true
+        }
+        FocusPrevTool => {
+            state.cycle_tool_focus(false);
+            true
+        }
+        ToggleFocusedTool => state.toggle_focused_tool(),
+        OpenCommandPalette => {
+            state.open_command_palette();
+            true
+        }
+        ToggleSidebar => {
+            state.toggle_sidebar();
+            true
+        }
+        OpenThemePicker => {
+            state.open_theme_picker();
+            true
+        }
+        OpenModelPicker => {
+            state.open_model_picker();
+            true
+        }
+        NewSession => {
+            state.new_session();
+            true
+        }
+        ListSessions => {
+            state.open_session_picker();
+            true
+        }
+        DeleteSession => {
+            state.open_delete_active_confirm();
+            true
+        }
+        SwitchSession(n) => state.switch_session_by_index(n),
+        OpenHelp => {
+            state.open_help();
+            true
+        }
+        Interrupt => {
+            handle.cancel();
+            true
         }
     }
-
-    // 普通编辑键交给 textarea
-    state.prompt.input(*key)
 }
 
 fn input_is_empty(state: &AppState) -> bool {
     state.prompt.lines().iter().all(|l| l.is_empty())
+}
+
+/// 对话框接受结果的动作分派（纯值动作，闭包不进对话框）。
+fn apply_select(
+    state: &mut AppState,
+    purpose: SelectPurpose,
+    value: String,
+    handle: &mrorcode_agent::RuntimeHandle,
+) {
+    match purpose {
+        SelectPurpose::Theme => {
+            if state.set_theme(&value) {
+                state.toast(format!("主题：{value}"));
+            }
+        }
+        SelectPurpose::Command => {
+            if let Some(cmd) = commands::command_by_id(&value) {
+                execute_command(state, cmd, handle);
+            }
+        }
+        SelectPurpose::Model => {
+            if state.set_model(&value) {
+                handle.set_model(value.clone());
+                state.toast(format!("模型：{value}（下一轮生效）"));
+            }
+        }
+        SelectPurpose::Session => {
+            if let Ok(id) = value.parse::<u64>() {
+                state.switch_session(id);
+            }
+        }
+    }
+}
+
+/// Confirm 对话框确认后的动作分派。
+fn apply_confirm(state: &mut AppState, action: dialog::ConfirmAction) {
+    match action {
+        dialog::ConfirmAction::DeleteSession(id) => {
+            state.delete_session(id);
+            state.toast("会话已删除");
+        }
+    }
+}
+
+/// 执行命令面板分派的纯数据动作。
+fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agent::RuntimeHandle) {
+    match cmd {
+        AppCommand::OpenCommandPalette => state.open_command_palette(),
+        AppCommand::NewSession => {
+            state.new_session();
+        }
+        AppCommand::ListSessions => state.open_session_picker(),
+        AppCommand::DeleteSession => state.open_delete_active_confirm(),
+        AppCommand::OpenThemePicker => state.open_theme_picker(),
+        AppCommand::OpenModelPicker => state.open_model_picker(),
+        AppCommand::ToggleSidebar => state.toggle_sidebar(),
+        AppCommand::Quit => state.should_quit = true,
+        AppCommand::Interrupt => {
+            if state.phase.is_busy() {
+                handle.cancel();
+            } else {
+                state.open_alert("interrupt", "当前没有正在进行的任务");
+            }
+        }
+        AppCommand::OpenHelp => state.open_help(),
+    }
 }
 
 /// 历史浏览：光标在首行首列（Up）或末行末列（Down）时触发，返回是否拦截。
@@ -293,8 +480,10 @@ fn restore_into_prompt(state: &mut AppState, text: String) {
 
 // ---------------- 节拍 ----------------
 
-fn ensure_spinner(spinner: &mut Option<Interval>, state: &AppState) {
-    match (state.phase.is_busy(), spinner.is_some()) {
+fn ensure_wake(spinner: &mut Option<Interval>, state: &AppState) {
+    // busy 时驱动 spinner；有 toast 时也需要节拍让其按时消失（空闲无 toast 时 0 唤醒）
+    let needed = state.phase.is_busy() || state.has_active_toasts();
+    match (needed, spinner.is_some()) {
         (true, false) => {
             *spinner = Some(tokio::time::interval(SPINNER_TICK));
         }
@@ -305,7 +494,9 @@ fn ensure_spinner(spinner: &mut Option<Interval>, state: &AppState) {
 
 // ---------------- 绘制 ----------------
 
-fn draw(f: &mut Frame<'_>, state: &mut AppState, theme: &Theme) {
+fn draw(f: &mut Frame<'_>, state: &mut AppState) {
+    // 每帧一次浅克隆（~50 个 Color，栈分配），避免与 state 的可变借用冲突
+    let theme = state.theme.clone();
     let area = f.area();
     // 整屏背景
     Block::default()
@@ -314,26 +505,25 @@ fn draw(f: &mut Frame<'_>, state: &mut AppState, theme: &Theme) {
 
     match state.route {
         Route::Home => {
-            home::render(state, area, f.buffer_mut(), theme);
+            home::render(state, area, f.buffer_mut(), &theme);
         }
-        Route::Session => draw_session(f, state, theme, area),
+        Route::Session => draw_session(f, state, &theme, area),
     }
 
     // 审批浮层
     if state.permission.is_some() {
-        permission::render(state, area, f.buffer_mut(), theme);
+        permission::render(state, area, f.buffer_mut(), &theme);
     }
 
-    // 顶部 notice
-    if let Some(text) = state.notice_text() {
-        let line = ratatui::text::Line::from(ratatui::text::Span::styled(
-            text.to_string(),
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ));
-        f.buffer_mut()
-            .set_line(area.x + 1, area.y, &line, area.width - 2);
+    // 对话框栈顶（Select/Confirm/Help）
+    if let Some(dialog) = state.dialogs.last() {
+        dialog::render_top(dialog, area, f.buffer_mut(), &theme);
+    }
+
+    // toast 浮层（最新在下，底部居中）
+    let toasts: Vec<&str> = state.active_toasts().collect();
+    if !toasts.is_empty() {
+        toast::render(area, f.buffer_mut(), &theme, &toasts);
     }
 }
 
@@ -425,6 +615,18 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn test_state() -> AppState {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEST_N: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "mrorcode-tui-test-{}-{}.json",
+            std::process::id(),
+            TEST_N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (store, _) = crate::storage::Store::load_from(&path);
+        AppState::new("m".into(), Vec::new(), PathBuf::from("."), store)
+    }
+
     fn buffer_contains(term: &Terminal<TestBackend>, needle: &str) -> bool {
         let buf = term.backend().buffer();
         let area = buf.area();
@@ -454,6 +656,7 @@ mod tests {
             middleware: Vec::new(),
             working_dir: PathBuf::from("."),
             system_prompt: String::new(),
+            model: None,
         });
         (h, rx)
     }
@@ -462,9 +665,8 @@ mod tests {
     async fn home_renders_logo_and_hint() {
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut state = AppState::new("m".into(), PathBuf::from("."));
-        term.draw(|f| draw(f, &mut state, &Theme::tokyonight()))
-            .unwrap();
+        let mut state = test_state();
+        term.draw(|f| draw(f, &mut state)).unwrap();
         assert!(buffer_contains(&term, "mrorcode"));
         assert!(buffer_contains(&term, "enter"));
         for ch in "发送".chars() {
@@ -478,7 +680,7 @@ mod tests {
         let (handle, mut events) =
             start_runtime(ScriptedProvider::new(vec![text_script("你好世界")]));
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut state = AppState::new("m".into(), PathBuf::from("."));
+        let mut state = test_state();
 
         on_key(&mut state, &k(KeyCode::Char('h')), &handle);
         on_key(&mut state, &k(KeyCode::Char('i')), &handle);
@@ -491,17 +693,26 @@ mod tests {
                 .await
                 .expect("event")
                 .unwrap();
-            let terminal = matches!(ev, RuntimeEvent::Agent(AgentEvent::TurnComplete { .. }));
-            if let RuntimeEvent::Agent(agent_ev) = ev {
-                state.on_runtime_event(agent_ev, &handle);
+            let terminal = matches!(
+                ev,
+                RuntimeEvent::Agent {
+                    event: AgentEvent::TurnComplete { .. },
+                    ..
+                }
+            );
+            if let RuntimeEvent::Agent {
+                session_id,
+                event: agent_ev,
+            } = ev
+            {
+                state.on_runtime_event(session_id, agent_ev, &handle);
             }
             if terminal {
                 break;
             }
         }
 
-        term.draw(|f| draw(f, &mut state, &Theme::tokyonight()))
-            .unwrap();
+        term.draw(|f| draw(f, &mut state)).unwrap();
         // 宽字符占两个 Cell，逐字断言而非整串（占格单元会打断连续性）
         for ch in "你好世界".chars() {
             assert!(buffer_contains(&term, &ch.to_string()), "missing {ch}");
@@ -511,24 +722,498 @@ mod tests {
 
     #[tokio::test]
     async fn idle_has_no_spinner_timer() {
-        let mut state = AppState::new("m".into(), PathBuf::from("."));
+        let mut state = test_state();
         let mut spinner: Option<tokio::time::Interval> = None;
-        ensure_spinner(&mut spinner, &state);
+        ensure_wake(&mut spinner, &state);
         assert!(spinner.is_none(), "idle loop must arm no timer (0 wakeups)");
 
         state.phase = Phase::Working;
-        ensure_spinner(&mut spinner, &state);
+        ensure_wake(&mut spinner, &state);
         assert!(spinner.is_some(), "busy state arms 100ms spinner");
 
         state.phase = Phase::Idle;
-        ensure_spinner(&mut spinner, &state);
+        ensure_wake(&mut spinner, &state);
         assert!(spinner.is_none(), "spinner must stop when idle again");
+    }
+
+    #[tokio::test]
+    async fn toasts_arm_wake_and_expire() {
+        let mut state = test_state();
+        state.toast("hi");
+        let mut spinner: Option<tokio::time::Interval> = None;
+        ensure_wake(&mut spinner, &state);
+        assert!(spinner.is_some(), "active toast arms the wake interval");
+        state.gc_toasts();
+        assert_eq!(state.active_toasts().count(), 1);
+
+        // 手动把时间戳调旧，gc 后节拍应撤掉
+        if let Some((_, t)) = state.toasts.first_mut() {
+            *t = std::time::Instant::now() - Duration::from_secs(4);
+        }
+        state.gc_toasts();
+        ensure_wake(&mut spinner, &state);
+        assert!(spinner.is_none(), "no timer after toasts expire");
+    }
+
+    #[tokio::test]
+    async fn tool_card_collapse_focus_and_expand() {
+        use crate::store::MessageView;
+
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.route = Route::Session;
+        state.messages.push(MessageView::assistant());
+
+        // 3 行 bash 输出：默认折叠，只显示提示
+        state.on_runtime_event(
+            crate::store::DEFAULT_SESSION,
+            AgentEvent::ToolStarted {
+                id: "t1".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            },
+            &handle,
+        );
+        state.on_runtime_event(
+            crate::store::DEFAULT_SESSION,
+            AgentEvent::ToolResult {
+                id: "t1".into(),
+                name: "bash".into(),
+                content: "line-a\nline-b\nline-c".into(),
+                is_error: false,
+            },
+            &handle,
+        );
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        // CJK 双宽字符的占位 Cell 会打断连续匹配，逐字断言
+        for ch in "输出行".chars() {
+            assert!(
+                buffer_contains(&term, &ch.to_string()),
+                "missing {ch} in collapsed hint"
+            );
+        }
+        assert!(!buffer_contains(&term, "line-a"));
+
+        // Tab 聚焦、Enter 展开后输出可见
+        assert!(on_key(&mut state, &k(KeyCode::Tab), &handle));
+        assert_eq!(state.focused_tool.as_deref(), Some("t1"));
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+        assert!(state.is_tool_expanded("t1"));
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "line-a"));
+        assert!(buffer_contains(&term, "line-c"));
+
+        // 再按 Enter 收起；Esc 清焦点
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+        assert!(!state.is_tool_expanded("t1"));
+        assert!(on_key(&mut state, &k(KeyCode::Esc), &handle));
+        assert!(state.focused_tool.is_none());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn leader_sequences_toggle_sidebar_and_open_themes() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        let before = state.sidebar;
+        let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+
+        // ctrl+x 然后 b：切换侧栏
+        on_key(&mut state, &ctrl_x, &handle);
+        assert!(state.leader_until.is_some());
+        assert!(on_key(&mut state, &k(KeyCode::Char('b')), &handle));
+        assert_ne!(state.sidebar, before);
+        assert!(state.leader_until.is_none());
+
+        // ctrl+x 然后 t：主题选择器
+        on_key(&mut state, &ctrl_x, &handle);
+        on_key(&mut state, &k(KeyCode::Char('t')), &handle);
+        assert_eq!(state.dialogs.len(), 1);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn expired_leader_falls_through_to_editing() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        // 手动把窗口放到过去
+        state.leader_until =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(3000));
+        let sidebar_before = state.sidebar;
+        on_key(&mut state, &k(KeyCode::Char('b')), &handle);
+        // 不触发 leader b：侧栏不变，字符进入输入框
+        assert_eq!(state.sidebar, sidebar_before);
+        assert!(state.prompt.lines().join("").contains('b'));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn unknown_leader_second_key_is_swallowed() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        on_key(&mut state, &k(KeyCode::Char('q')), &handle);
+        assert!(state.leader_until.is_none());
+        assert!(state.prompt.lines().join("").is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn user_keybind_override_takes_effect() {
+        use crate::storage::KeybindEntry;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let path =
+            std::env::temp_dir().join(format!("mrorcode-tui-keybind-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (mut store, _) = crate::storage::Store::load_from(&path);
+        store.data.keybinds = vec![KeybindEntry {
+            keys: "ctrl+k".into(),
+            action: "command_palette".into(),
+        }];
+        let mut state = AppState::new("m".into(), Vec::new(), PathBuf::from("."), store);
+
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert_eq!(state.dialogs.len(), 1);
+        let _ = std::fs::remove_file(&path);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn model_picker_sets_model_and_persists() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let path =
+            std::env::temp_dir().join(format!("mrorcode-tui-model-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (store, _) = crate::storage::Store::load_from(&path);
+        let mut state = AppState::new(
+            "m1".into(),
+            vec!["m1".to_string(), "m2-fast".to_string()],
+            PathBuf::from("."),
+            store,
+        );
+        state.open_model_picker();
+        assert_eq!(state.dialogs.len(), 1);
+
+        // 下移选第二项并确认
+        on_key(&mut state, &k(KeyCode::Down), &handle);
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+
+        assert!(state.dialogs.is_empty());
+        assert_eq!(state.model, "m2-fast");
+        assert_eq!(state.kv.data.model.as_deref(), Some("m2-fast"));
+
+        // 重载状态：记住的模型成为初始模型
+        let (store2, _) = crate::storage::Store::load_from(&path);
+        let state2 = AppState::new(
+            "m1".into(),
+            vec!["m1".to_string(), "m2-fast".to_string()],
+            PathBuf::from("."),
+            store2,
+        );
+        assert_eq!(state2.model, "m2-fast");
+        let _ = std::fs::remove_file(&path);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn help_dialog_lists_real_keybinds_and_closes() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        for ch in "help".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert_eq!(state.dialogs.len(), 1);
+
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        // 真实绑定（含 leader）出现在 help 中
+        assert!(buffer_contains(&term, "ctrl+p"));
+        assert!(buffer_contains(&term, "leader t"));
+        assert!(buffer_contains(&term, "f2"));
+
+        // q 关闭
+        on_key(&mut state, &k(KeyCode::Char('q')), &handle);
+        assert!(state.dialogs.is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn help_reflects_user_keybind_override() {
+        use crate::storage::KeybindEntry;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("mrorcode-tui-help-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (mut store, _) = crate::storage::Store::load_from(&path);
+        store.data.keybinds = vec![KeybindEntry {
+            keys: "ctrl+k".into(),
+            action: "command_palette".into(),
+        }];
+        let mut state = AppState::new("m".into(), Vec::new(), PathBuf::from("."), store);
+        state.open_help();
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "ctrl+k"));
+        let _ = std::fs::remove_file(&path);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn interrupt_when_idle_opens_alert() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        assert!(!state.phase.is_busy());
+
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        for ch in "interrupt".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert_eq!(state.dialogs.len(), 1);
+        assert!(matches!(
+            state.dialogs[0],
+            crate::widgets::dialog::Dialog::Alert(_)
+        ));
+        // enter 关闭 alert
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert!(state.dialogs.is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn multiple_sessions_bucket_messages_and_restore() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![
+            text_script("r1"),
+            text_script("r2"),
+        ]));
+        let mut state = test_state();
+
+        // 会话 1 提交（标题取自首条消息）
+        for ch in "first topic".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert_eq!(state.active_session, 1);
+        assert_eq!(state.sessions[0].title, "first topic");
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.route, Route::Session);
+
+        // ctrl+n 新建会话：消息收桶、回到 Home
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert_eq!(state.active_session, 2);
+        assert!(state.messages.is_empty());
+        assert_eq!(state.route, Route::Home);
+        for ch in "second".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert_eq!(state.messages.len(), 1);
+
+        // leader 1 切回会话 1：投影原样恢复
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        on_key(&mut state, &k(KeyCode::Char('1')), &handle);
+        assert_eq!(state.active_session, 1);
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.route, Route::Session);
+
+        // leader 2 再切回去
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        on_key(&mut state, &k(KeyCode::Char('2')), &handle);
+        assert_eq!(state.active_session, 2);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn session_picker_switches_and_delete_confirm_removes() {
+        use crate::store::MessageView;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("r")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+
+        // 造两个会话（消息直接入投影，标题模拟 submit 时设置）
+        state.route = Route::Session;
+        state.messages.push(MessageView::user("alpha".into()));
+        state.sessions[0].title = "alpha".into();
+        state.new_session();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user("beta".into()));
+        state.sessions[1].title = "beta".into();
+
+        // ctrl+l 打开会话列表，下移选 alpha 并切换
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert_eq!(state.dialogs.len(), 1);
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "alpha"));
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert_eq!(state.active_session, 1);
+
+        // 命令面板 → delete session → Confirm → y 确认
+        state.open_delete_active_confirm();
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "alpha"));
+        on_key(&mut state, &k(KeyCode::Char('y')), &handle);
+        assert!(state.dialogs.is_empty());
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(state.active_session, 2);
+        assert_eq!(state.messages[0].text, "beta");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn command_palette_opens_filters_and_runs() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        let before = state.sidebar;
+
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert_eq!(state.dialogs.len(), 1);
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "toggle sidebar"));
+
+        // 过滤到 toggle sidebar 并执行
+        for ch in "side".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert!(state.dialogs.is_empty());
+        assert_ne!(state.sidebar, before);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn command_palette_chains_into_theme_picker() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        for ch in "theme".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+
+        // 面板出栈后立即压入主题选择器
+        assert_eq!(state.dialogs.len(), 1);
+        use crate::widgets::dialog::Dialog;
+        if let Dialog::Select(s) = &state.dialogs[0] {
+            use crate::widgets::dialog::select::SelectPurpose as P;
+            assert_eq!(s.purpose(), P::Theme);
+            assert!(s.len() >= 30, "33 个 vendored 主题应可选");
+        }
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn select_dialog_filters_and_applies_theme() {
+        use crate::widgets::dialog::select::SelectItem;
+        use crate::widgets::dialog::{select::SelectState, Dialog, SelectPurpose};
+
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        let items = vec!["nord", "dracula", "tokyonight"]
+            .into_iter()
+            .map(|n| SelectItem {
+                label: n.into(),
+                hint: String::new(),
+                group: "Dark".into(),
+                value: n.into(),
+            })
+            .collect();
+        state.push_dialog(Dialog::Select(SelectState::new(
+            "switch theme",
+            SelectPurpose::Theme,
+            items,
+        )));
+
+        for ch in "nor".chars() {
+            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
+        }
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "nord"));
+        assert!(!buffer_contains(&term, "dracula"));
+
+        // Enter 应用、对话框出栈、KV 记住
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert!(state.dialogs.is_empty());
+        assert_eq!(state.theme_name, "nord");
+        assert_eq!(state.kv.data.theme.as_deref(), Some("nord"));
+
+        // Esc 在无对话框时回到 base 层行为（idle 直接退出）
+        on_key(&mut state, &k(KeyCode::Esc), &handle);
+        assert!(state.should_quit);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn toast_renders_and_is_cleared_by_gc() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.toast("已保存");
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "已"));
+        assert!(buffer_contains(&term, "保"));
+
+        state.toasts.clear();
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(!buffer_contains(&term, "已"));
+        handle.shutdown();
     }
 
     #[tokio::test]
     async fn ctrl_c_empty_quits_and_f2_toggles_sidebar() {
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut state = AppState::new("m".into(), PathBuf::from("."));
+        let mut state = test_state();
         on_key(
             &mut state,
             &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -536,7 +1221,7 @@ mod tests {
         );
         assert!(state.should_quit);
 
-        let mut state2 = AppState::new("m".into(), PathBuf::from("."));
+        let mut state2 = test_state();
         assert!(state2.sidebar);
         on_key(&mut state2, &k(KeyCode::F(2)), &handle);
         assert!(!state2.sidebar);

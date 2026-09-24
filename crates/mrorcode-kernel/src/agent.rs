@@ -121,15 +121,12 @@ impl AgentBuilder {
         let (cmd_tx, cmd_rx) = unbounded_channel::<AgentCommand>();
         let (evt_tx, evt_rx) = unbounded_channel::<AgentEvent>();
 
-        let mut conversation = Conversation::new();
-        if let Some(system) = self.system_prompt {
-            conversation.push(Message::system(system));
-        }
         let mut state = AgentState {
             provider,
             tools: Arc::new(self.tools),
             middleware: self.middleware,
-            conversation,
+            conversations: HashMap::new(),
+            system_prompt: self.system_prompt,
             working_dir: self.working_dir,
             max_rounds: self.max_rounds,
             max_tool_result_bytes: self.max_tool_result_bytes,
@@ -150,15 +147,32 @@ struct AgentState {
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
     middleware: Vec<Arc<dyn ToolMiddleware>>,
-    conversation: Conversation,
+    /// 多会话会话体（M2 仅内存；M3 接磁盘持久化）。
+    conversations: HashMap<u64, Conversation>,
+    /// 每个新会话的 system prompt（仅首次写入）。
+    system_prompt: Option<String>,
     working_dir: PathBuf,
     max_rounds: usize,
     max_tool_result_bytes: usize,
     chat_options: ChatOptions,
 }
 
-/// 正在运行的轮次：取消令牌 + 结束时归还会话的 join handle。
+impl AgentState {
+    /// 取走（或新建）一个会话的会话体，供 turn 持有。
+    fn take_conversation(&mut self, session_id: u64) -> Conversation {
+        self.conversations.remove(&session_id).unwrap_or_else(|| {
+            let mut convo = Conversation::new();
+            if let Some(system) = &self.system_prompt {
+                convo.push(Message::system(system.clone()));
+            }
+            convo
+        })
+    }
+}
+
+/// 正在运行的轮次：所属会话 + 取消令牌 + 结束时归还会话的 join handle。
 struct RunningTurn {
+    session_id: u64,
     cancel: CancellationToken,
     done: tokio::task::JoinHandle<Conversation>,
 }
@@ -170,19 +184,22 @@ async fn run_agent(
 ) {
     let broker = RequestBroker::new(evt_tx.clone());
     let mut running: Option<RunningTurn> = None;
-    let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    // busy 时按 FIFO 排队（含 session_id）
+    let mut pending: std::collections::VecDeque<(u64, String)> = std::collections::VecDeque::new();
 
     let start_turn = |state: &mut AgentState,
                       broker: &RequestBroker,
                       events: UnboundedSender<AgentEvent>,
+                      session_id: u64,
                       text: String|
      -> RunningTurn {
         let cancel = CancellationToken::new();
+        let conversation = state.take_conversation(session_id);
         let turn = TurnCtx {
             provider: Arc::clone(&state.provider),
             tools: Arc::clone(&state.tools),
             middleware: state.middleware.clone(),
-            conversation: std::mem::take(&mut state.conversation),
+            conversation,
             working_dir: state.working_dir.clone(),
             max_rounds: state.max_rounds,
             max_tool_result_bytes: state.max_tool_result_bytes,
@@ -197,7 +214,11 @@ async fn run_agent(
             turn.run().await;
             turn.conversation
         });
-        RunningTurn { cancel, done }
+        RunningTurn {
+            session_id,
+            cancel,
+            done,
+        }
     };
 
     loop {
@@ -223,12 +244,16 @@ async fn run_agent(
                             broker.fail_all();
                         }
                     }
-                    Some(AgentCommand::SendMessage(text)) => {
+                    Some(AgentCommand::SetModel(model)) => {
+                        state.chat_options.model = Some(model);
+                    }
+                    Some(AgentCommand::Submit { session_id, text }) => {
                         if running.is_some() {
-                            // 轮次运行中：FIFO 排队（mpsc 之外的应用层队列，保证顺序可见）
-                            pending.push_back(text);
+                            // 轮次运行中：FIFO 排队（M2 不做跨会话并发）
+                            pending.push_back((session_id, text));
                         } else {
-                            running = Some(start_turn(state, &broker, evt_tx.clone(), text));
+                            running =
+                                Some(start_turn(state, &broker, evt_tx.clone(), session_id, text));
                         }
                     }
                 }
@@ -240,13 +265,20 @@ async fn run_agent(
                     None => std::future::pending().await,
                 }
             }, if running.is_some() => {
+                let session_id = running.as_ref().map(|rt| rt.session_id);
                 running = None;
                 broker.fail_all();
-                if let Ok(conversation) = returned {
-                    state.conversation = conversation;
+                if let (Some(session_id), Ok(conversation)) = (session_id, returned) {
+                    state.conversations.insert(session_id, conversation);
                 }
-                if let Some(next) = pending.pop_front() {
-                    running = Some(start_turn(state, &broker, evt_tx.clone(), next));
+                if let Some((next_session, next_text)) = pending.pop_front() {
+                    running = Some(start_turn(
+                        state,
+                        &broker,
+                        evt_tx.clone(),
+                        next_session,
+                        next_text,
+                    ));
                 }
             }
         }

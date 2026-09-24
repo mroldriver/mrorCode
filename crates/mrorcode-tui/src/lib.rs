@@ -5,7 +5,11 @@
 
 mod app;
 pub mod bench_support;
+mod commands;
+mod fuzzy;
+mod keymap;
 pub mod render;
+mod storage;
 mod store;
 mod theme;
 mod widgets;

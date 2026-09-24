@@ -24,12 +24,19 @@ pub struct Config {
 #[serde(default)]
 pub struct ProviderConfig {
     /// 协议类型，缺省 "openai_compat"。
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub provider_type: Option<String>,
+    #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub context_window: Option<u32>,
+    /// 同 provider 下可切换的额外模型（M2 模型选择器数据源）。
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// 加载结果（带诊断）。
@@ -51,6 +58,8 @@ pub struct ResolvedProvider {
     pub api_key: String,
     pub model: String,
     pub context_window: u32,
+    /// 同 provider 下可切换的全部模型（含当前 model，去重保序）。
+    pub models: Vec<String>,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -206,6 +215,12 @@ impl Config {
                 name: name.to_string(),
                 field: "model",
             })?;
+        let mut models: Vec<String> = Vec::new();
+        for m in std::iter::once(model.clone()).chain(cfg.models.iter().cloned()) {
+            if !models.contains(&m) {
+                models.push(m);
+            }
+        }
         Ok(ResolvedProvider {
             name: name.to_string(),
             provider_type,
@@ -213,6 +228,7 @@ impl Config {
             api_key: cfg.api_key.clone().unwrap_or_default(),
             model,
             context_window: cfg.context_window.unwrap_or(128_000),
+            models,
         })
     }
 }
@@ -295,6 +311,7 @@ context_window = 200000
                 api_key: None,
                 model: Some("m".into()),
                 context_window: None,
+                models: Vec::new(),
             },
         );
         cfg.default_provider = Some("x".into());

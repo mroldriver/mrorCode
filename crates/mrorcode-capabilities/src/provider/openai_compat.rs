@@ -97,7 +97,9 @@ impl LlmProvider for OpenAiCompatProvider {
                 + 'a,
         >,
     > {
-        let body = WireRequest::from_parts(&self.model, messages, tools, options);
+        // 每轮模型覆盖（SetModel）优先于 provider 自带模型
+        let model = options.model.clone().unwrap_or_else(|| self.model.clone());
+        let body = WireRequest::from_parts(&model, messages, tools, options);
         Box::pin(async move { self.start(body, cancel).await })
     }
 }

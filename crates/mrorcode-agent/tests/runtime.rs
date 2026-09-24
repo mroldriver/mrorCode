@@ -17,8 +17,10 @@ async fn drain_until_complete(
     {
         let terminal = matches!(
             ev,
-            RuntimeEvent::Agent(mrorcode_kernel::AgentEvent::TurnComplete { .. })
-                | RuntimeEvent::Exited
+            RuntimeEvent::Agent {
+                event: mrorcode_kernel::AgentEvent::TurnComplete { .. },
+                ..
+            } | RuntimeEvent::Exited
         );
         out.push(ev);
         if terminal {
@@ -37,17 +39,22 @@ async fn submit_streams_and_completes() {
         middleware: Vec::new(),
         working_dir: std::env::temp_dir(),
         system_prompt: "system".to_string(),
+        model: None,
     });
 
-    handle.submit("hello");
+    handle.submit(7, "hello");
     let out = drain_until_complete(&mut events).await;
     assert!(out.iter().any(|e| matches!(
         e,
-        RuntimeEvent::Agent(mrorcode_kernel::AgentEvent::TextDelta(t)) if t == "runtime ok"
+        RuntimeEvent::Agent { session_id, event: mrorcode_kernel::AgentEvent::TextDelta(t) }
+            if *session_id == 7 && t == "runtime ok"
     )));
     assert!(out.iter().any(|e| matches!(
         e,
-        RuntimeEvent::Agent(mrorcode_kernel::AgentEvent::TurnComplete { .. })
+        RuntimeEvent::Agent {
+            event: mrorcode_kernel::AgentEvent::TurnComplete { .. },
+            ..
+        }
     )));
 
     handle.shutdown();
@@ -72,8 +79,9 @@ async fn cancel_command_is_forwarded() {
         middleware: Vec::new(),
         working_dir: std::env::temp_dir(),
         system_prompt: String::new(),
+        model: None,
     });
-    handle.submit("hi");
+    handle.submit(1, "hi");
     let _ = drain_until_complete(&mut events).await;
     // 空闲时发 cancel 也不能阻塞/报错
     handle.cancel();

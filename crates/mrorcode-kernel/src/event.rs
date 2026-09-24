@@ -6,8 +6,10 @@ use serde_json::Value;
 /// driver → agent 的命令。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AgentCommand {
-    /// 发送一条用户消息，开启新一轮对话。
-    SendMessage(String),
+    /// 向指定会话发送一条用户消息，开启新一轮对话。
+    Submit { session_id: u64, text: String },
+    /// 切换模型（在当前轮次结束后的下一轮生效）。
+    SetModel(String),
     /// 回应一个 [`AgentEvent::Request`]（审批等）。
     Respond(u64, Value),
     /// 取消当前轮次。

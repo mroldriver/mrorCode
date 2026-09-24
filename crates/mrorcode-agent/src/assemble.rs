@@ -17,7 +17,13 @@ pub struct Assembly {
     pub handle: RuntimeHandle,
     pub events: tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
     pub model: String,
+    /// 同 provider 下可切换模型（含当前 model）。
+    pub available_models: Vec<String>,
 }
+
+/// 装配输入：额外携带启动模型覆盖（KV 记住的选择）。
+#[derive(Clone, Debug, Default)]
+pub struct InitialModel(pub Option<String>);
 
 /// 装配选项。
 #[derive(Clone, Debug, Default)]
@@ -31,6 +37,15 @@ pub fn assemble_openai_compat(
     resolved: &ResolvedProvider,
     working_dir: PathBuf,
     options: &AssembleOptions,
+) -> anyhow::Result<Assembly> {
+    assemble_openai_compat_with_model(resolved, working_dir, options, None)
+}
+
+pub fn assemble_openai_compat_with_model(
+    resolved: &ResolvedProvider,
+    working_dir: PathBuf,
+    options: &AssembleOptions,
+    initial_model: Option<String>,
 ) -> anyhow::Result<Assembly> {
     let provider = OpenAiCompatProvider::new(OpenAiCompatConfig {
         base_url: resolved.base_url.clone(),
@@ -51,17 +66,25 @@ pub fn assemble_openai_compat(
 
     let system_prompt = coding_persona(&working_dir);
 
+    // KV 记住的模型若在可用列表内则作为启动覆盖
+    let model = match &initial_model {
+        Some(m) if resolved.models.iter().any(|x| x == m) => m.clone(),
+        _ => resolved.model.clone(),
+    };
+
     let (handle, events) = start(RuntimeStart {
         provider: Arc::new(provider),
         tools: registry,
         middleware,
         working_dir,
         system_prompt,
+        model: Some(model.clone()).filter(|m| m != &resolved.model),
     });
 
     Ok(Assembly {
         handle,
         events,
-        model: resolved.model.clone(),
+        model,
+        available_models: resolved.models.clone(),
     })
 }

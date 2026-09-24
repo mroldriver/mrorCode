@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 
 use crate::render::str_width;
 use crate::theme::Theme;
+use crate::widgets::highlight;
 
 enum Block {
     Code { lang: String, body: String },
@@ -19,7 +20,8 @@ enum Block {
 pub struct MarkdownView {
     raw: String,
     blocks: Vec<Block>,
-    cache: Vec<Option<(u16, Vec<Line<'static>>)>>,
+    /// (宽度, 主题代际, 布局行)。主题切换 bump gen 使缓存失效。
+    cache: Vec<Option<(u16, u64, Vec<Line<'static>>)>>,
 }
 
 impl Default for MarkdownView {
@@ -64,22 +66,22 @@ impl MarkdownView {
         true
     }
 
-    /// 渲染为指定宽度的终端行（宽度不变时直接走缓存）。
-    pub fn lines(&mut self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    /// 渲染为指定宽度的终端行（宽度与主题代际不变时直接走缓存）。
+    pub fn lines(&mut self, width: u16, theme_gen: u64, theme: &Theme) -> Vec<Line<'static>> {
         let mut out: Vec<Line<'static>> = Vec::new();
         for i in 0..self.blocks.len() {
             let needs = match &self.cache[i] {
-                Some((w, _)) => *w != width,
+                Some((w, gen, _)) => *w != width || *gen != theme_gen,
                 None => true,
             };
             if needs {
                 let lines = match &self.blocks[i] {
-                    Block::Code { body, .. } => layout_code(body, width, theme),
+                    Block::Code { lang, body } => layout_code(lang, body, width, theme),
                     Block::Markup(src) => layout_markup(src, width, theme),
                 };
-                self.cache[i] = Some((width, lines));
+                self.cache[i] = Some((width, theme_gen, lines));
             }
-            if let Some((_, lines)) = &self.cache[i] {
+            if let Some((_, _, lines)) = &self.cache[i] {
                 out.extend(lines.iter().cloned());
             }
             out.push(Line::raw(""));
@@ -91,12 +93,14 @@ impl MarkdownView {
     }
 
     /// 行数统计的零分配快路径：缓存命中时只数行，不克隆。
-    pub fn line_count(&mut self, width: u16, theme: &Theme) -> usize {
+    pub fn line_count(&mut self, width: u16, theme_gen: u64, theme: &Theme) -> usize {
         let mut total = 0;
         let mut miss = false;
         for cached in &self.cache {
             match cached {
-                Some((w, lines)) if *w == width => total += lines.len() + 1,
+                Some((w, gen, lines)) if *w == width && *gen == theme_gen => {
+                    total += lines.len() + 1
+                }
                 _ => {
                     miss = true;
                     break;
@@ -104,10 +108,9 @@ impl MarkdownView {
             }
         }
         if miss {
-            // 冷路径：补齐布局后再数
-            self.lines(width, theme).len()
+            self.lines(width, theme_gen, theme).len()
         } else {
-            total.saturating_sub(1) // 末尾 block 间不留空行
+            total.saturating_sub(1)
         }
     }
 }
@@ -172,15 +175,52 @@ fn split_blocks(src: &str) -> Vec<Block> {
     blocks
 }
 
-fn layout_code(body: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let bg = Style::default().fg(theme.md_code).bg(theme.md_code_bg);
-    body.trim_end_matches('\n')
-        .lines()
-        .map(|l| {
-            let clipped = clip_line(l, width as usize);
-            Line::from(vec![Span::styled(clipped, bg)])
-        })
-        .collect()
+fn layout_code(lang: &str, body: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    // 已闭合且可识别语言的代码块：syntect 高亮；否则朴素 code 底色
+    let highlighted = (!lang.is_empty())
+        .then(|| highlight::highlight_lines(lang, body, theme))
+        .flatten();
+    match highlighted {
+        Some(mut lines) => {
+            for line in &mut lines {
+                clip_line_spans(line, width as usize);
+            }
+            lines
+        }
+        None => {
+            let bg = Style::default().fg(theme.md_code).bg(theme.md_code_bg);
+            body.trim_end_matches('\n')
+                .lines()
+                .map(|l| {
+                    let clipped = clip_line(l, width as usize);
+                    Line::from(vec![Span::styled(clipped, bg)])
+                })
+                .collect()
+        }
+    }
+}
+
+/// 截断超长高亮行（按显示宽度裁掉超出部分的 span）。
+fn clip_line_spans(line: &mut Line<'static>, max: usize) {
+    let mut used = 0usize;
+    line.spans.retain(|span| {
+        let w = str_width(&span.content);
+        if used >= max {
+            return false;
+        }
+        used += w;
+        true
+    });
+    // 末个保留 span 可能越界，按剩余显示宽度安全裁短
+    if let Some(last) = line.spans.last_mut() {
+        let overflow = used.saturating_sub(max);
+        if overflow > 0 {
+            let last_w = str_width(&last.content);
+            let keep_w = last_w.saturating_sub(overflow);
+            let clipped = crate::render::take_by_width(&last.content, keep_w).to_string();
+            last.content = clipped.into();
+        }
+    }
 }
 
 fn layout_markup(src: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -308,4 +348,97 @@ fn clip_line(s: &str, max: usize) -> String {
 #[allow(dead_code)]
 fn _color_use(c: Color) -> Color {
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code_raw() -> String {
+        "```rust\nfn main() {\n    let x = 1;\n}\n```".to_string()
+    }
+
+    #[test]
+    fn fenced_code_is_highlighted_with_code_bg() {
+        let theme = Theme::tokyonight();
+        let mut view = MarkdownView::new();
+        view.update(&code_raw());
+        let lines = view.lines(100, 0, &theme);
+        assert_eq!(lines.len(), 3);
+        let tinted = lines.iter().any(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.style.fg.is_some_and(|c| c != theme.text))
+        });
+        assert!(tinted, "rust keyword/number should be tinted");
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .all(|s| s.style.bg == Some(theme.md_code_bg)),
+            "all code spans share md_code_bg"
+        );
+    }
+
+    #[test]
+    fn unknown_language_falls_back_to_plain_block() {
+        let theme = Theme::tokyonight();
+        let mut view = MarkdownView::new();
+        view.update("```xyzqwty\nhello\n```");
+        let lines = view.lines(100, 0, &theme);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].content, "hello");
+        assert_eq!(lines[0].spans[0].style.bg, Some(theme.md_code_bg));
+    }
+
+    #[test]
+    fn long_highlighted_line_is_clipped_to_width() {
+        let theme = Theme::tokyonight();
+        let long_line = "let ".repeat(30); // 120 字符
+        let mut view = MarkdownView::new();
+        view.update(&format!("```rust\n{long_line}\n```"));
+        let lines = view.lines(40, 0, &theme);
+        let total: usize = lines[0].spans.iter().map(|s| str_width(&s.content)).sum();
+        assert!(total <= 40, "clipped width was {total}");
+    }
+
+    #[test]
+    fn theme_gen_bump_rebuilds_highlight_colors() {
+        let theme = Theme::tokyonight();
+        let mut view = MarkdownView::new();
+        view.update(&code_raw());
+        view.lines(100, 0, &theme); // 先以旧主题填充缓存
+
+        // 切换主题：数字色改成醒目纯红，gen +1 必须使缓存失效
+        let mut next = theme.clone();
+        next.syntax_number = Color::Rgb(255, 0, 0);
+        next.md_code_bg = Color::Rgb(1, 2, 3);
+        let after = view.lines(100, 1, &next);
+
+        assert!(
+            after
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .any(|s| s.style.bg == Some(Color::Rgb(1, 2, 3))),
+            "new gen must pick up new code bg"
+        );
+        assert!(
+            after
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .any(|s| s.content == "1" && s.style.fg == Some(Color::Rgb(255, 0, 0))),
+            "numeric literal must take the new syntax_number color"
+        );
+    }
+
+    #[test]
+    fn same_gen_and_width_reuses_cache() {
+        let theme = Theme::tokyonight();
+        let mut view = MarkdownView::new();
+        view.update(&code_raw());
+        let first = view.lines(100, 0, &theme);
+        let second = view.lines(100, 0, &theme);
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first[0].spans.len(), second[0].spans.len());
+    }
 }

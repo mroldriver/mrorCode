@@ -1,8 +1,8 @@
-//! 右侧 42 列侧栏（M1：模型/目录/会话信息；M2 加 context/todo/files 分区）。
+//! 右侧 42 列侧栏：会话列表（active 高亮/busy spinner）+ 模型/目录徽标。
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Widget};
 
@@ -25,17 +25,60 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
         height: area.height.saturating_sub(2),
     };
 
-    let cwd = state.working_dir.display().to_string();
-    let cwd = crate::render::truncate_end(&cwd, inner.width as usize);
-    let messages = state.messages.len().to_string();
+    let title = Line::from(Span::styled(
+        "mrorcode",
+        Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD),
+    ));
+    buf.set_line(inner.x, inner.y, &title, inner.width);
 
-    let rows = vec![
-        Line::from(Span::styled(
-            "mrorcode",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        )),
+    // 底部徽标占 5 行（空行/model/dir/空/提示）
+    let footer_h = 5u16;
+    let list_top = inner.y + 2;
+    let list_bottom = inner
+        .y
+        .saturating_add(inner.height)
+        .saturating_sub(footer_h);
+
+    for (i, session) in state.sessions.iter().enumerate() {
+        let y = list_top + i as u16;
+        if y >= list_bottom {
+            break;
+        }
+        let active = session.id == state.active_session;
+        let marker = if active {
+            "\u{25CF} " // ●
+        } else {
+            "  "
+        };
+        let glyph = if session.phase.is_busy() {
+            format!("{} ", state.spinner_glyph())
+        } else {
+            String::new()
+        };
+        let label =
+            crate::render::truncate_end(&session.title, (inner.width as usize).saturating_sub(6));
+        let color = if active {
+            theme.primary
+        } else {
+            theme.text_muted
+        };
+        let line = Line::from(vec![
+            Span::styled(marker, Style::default().fg(theme.primary)),
+            Span::styled(glyph, Style::default().fg(color)),
+            Span::styled(label, Style::default().fg(color)),
+        ]);
+        buf.set_line(inner.x, y, &line, inner.width);
+    }
+
+    // 底部徽标
+    let fy = inner.y + inner.height.saturating_sub(footer_h);
+    let cwd = crate::render::truncate_end(
+        &state.working_dir.display().to_string(),
+        inner.width as usize - 8,
+    );
+    let footer = vec![
         Line::raw(""),
         Line::from(vec![
             Span::styled("model  ", Style::default().fg(theme.text_muted)),
@@ -45,19 +88,14 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
             Span::styled("dir    ", Style::default().fg(theme.text_muted)),
             Span::styled(cwd, Style::default().fg(theme.text)),
         ]),
-        Line::from(vec![
-            Span::styled("msgs   ", Style::default().fg(theme.text_muted)),
-            Span::styled(messages, Style::default().fg(theme.text)),
-        ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "F2 toggle sidebar",
+            "ctrl+p 命令 \u{00B7} ctrl+n 新会话",
             Style::default().fg(theme.text_muted),
         )),
     ];
-
-    for (i, line) in rows.into_iter().enumerate() {
-        let y = inner.y + i as u16;
+    for (i, line) in footer.into_iter().enumerate() {
+        let y = fy + i as u16;
         if y < inner.y + inner.height {
             buf.set_line(inner.x, y, &line, inner.width);
         }

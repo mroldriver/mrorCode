@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/mrorcode-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "A fast terminal AI coding agent"
@@ -60,7 +60,11 @@ dirs = "5"
 ratatui = "0.30"
 crossterm = "0.29"
 tui-textarea = { package = "tui-textarea-2", version = "0.13", default-features = false, features = ["crossterm"] }
+
+# Markdown
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+# 语法高亮（纯 Rust fancy-regex，避免 onig 的 C 依赖）
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 unicode-width = "0.2"
 
 # CLI

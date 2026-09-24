@@ -5,20 +5,25 @@ use serde_json::json;
 use mrorcode_agent::{Assembly, RuntimeEvent};
 use mrorcode_kernel::event::AgentEvent;
 
+/// headless 使用固定会话 id（无交互，单任务单会话）。
+pub const HEADLESS_SESSION: u64 = 1;
+
 /// 运行一个 prompt 直到终态，返回进程退出码（0 成功）。
 pub async fn run_headless(assembly: &mut Assembly, prompt: &str, json_mode: bool) -> i32 {
-    assembly.handle.submit(prompt.to_string());
+    assembly.handle.submit(HEADLESS_SESSION, prompt.to_string());
 
     let mut stop_ok = false;
     while let Some(ev) = assembly.events.recv().await {
         match ev {
-            RuntimeEvent::Agent(ev) => match handle_agent_event(assembly, ev, json_mode) {
-                None => continue,
-                Some(success) => {
-                    stop_ok = success;
-                    break;
+            RuntimeEvent::Agent { event: ev, .. } => {
+                match handle_agent_event(assembly, ev, json_mode) {
+                    None => continue,
+                    Some(success) => {
+                        stop_ok = success;
+                        break;
+                    }
                 }
-            },
+            }
             RuntimeEvent::Exited => break,
         }
     }
