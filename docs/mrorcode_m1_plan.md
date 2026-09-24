@@ -5,7 +5,7 @@
 > headless 与 TUI 均端到端跑通。实测数据与偏差见文末「九、M1 完成报告」。
 >
 > 本计划是第一个可执行里程碑（M1）的实施方案。整体产品规划见
-> [docs/project-plan-atomcode.md](../../docs/project-plan-atomcode.md)，
+> [project-plan-atomcode.md](project-plan-atomcode.md)，
 > 本文在其基础上把第一阶段细化为可落地的步骤、文件与验证。
 
 ## 一、调研结论（Repository Research）
@@ -258,9 +258,9 @@ cli/headless 同样经 agent runtime，禁止第二份 agent 状态机。
 - 端到端验证：本地 mock SSE（Python，第一轮 bash 工具调用、第二轮收尾）跑通
   `mrorcode run --json`，事件链 `run.started → message.delta → reasoning.delta →
   tool.started → tool.completed → turn.completed → run.finished` 完整，退出码正确。
-- 附加交付：[config.example.toml](../../config.example.toml)、
-  [scripts/install.ps1](../../scripts/install.ps1)（装入 `~/.cargo/bin`，全局可用）、
-  [scripts/bootstrap-tools.ps1](../../scripts/bootstrap-tools.ps1)（本机工具链修复，见 9.3）。
+- 附加交付：[config.example.toml](../config.example.toml)、
+  [scripts/install.ps1](../scripts/install.ps1)（装入 `~/.cargo/bin`，全局可用）、
+  [scripts/bootstrap-tools.ps1](../scripts/bootstrap-tools.ps1)（本机工具链修复，见 9.3）。
 
 ### 9.2 性能实测（criterion，bench profile）
 

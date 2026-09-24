@@ -18,6 +18,8 @@ cargo build --release                           # -> target/release/mrorcode.exe
 cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = release + line tables
 ```
 
+- Install to user PATH (`~/.cargo/bin`, no admin): `cargo build --release` then
+  `pwsh -File scripts/install.ps1`. On a fresh clone, run `scripts/bootstrap-tools.ps1` first (see Gotchas).
 - Root `cargo build` / `cargo test` only cover `mrorcode-cli` (`default-members` in the root
   `Cargo.toml`). Always pass `--workspace` or `-p <crate>`.
 - End-to-end without a real API: `python .tools/mock_sse.py 8931`, then
@@ -49,7 +51,7 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   without a benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
   Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.
 - Comments and design docs are Chinese — preserve existing Chinese comments and match that tone.
-- Milestone plans: `.trae/documents/mrorcode_m{1,2,3}_plan.md`; product design: `docs/project-plan-atomcode.md`.
+- Milestone plans: `docs/mrorcode_m{1,2,3}_plan.md`; product design: `docs/project-plan-atomcode.md`.
 
 ## Versioning
 
