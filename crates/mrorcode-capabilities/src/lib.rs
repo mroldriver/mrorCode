@@ -10,3 +10,12 @@ pub mod approval;
 
 #[cfg(feature = "tools")]
 pub mod tools;
+
+#[cfg(feature = "tools")]
+pub mod path_guard;
+
+#[cfg(feature = "tools")]
+pub mod session;
+
+#[cfg(feature = "tools")]
+pub mod mcp;

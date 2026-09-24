@@ -40,6 +40,7 @@ async fn submit_streams_and_completes() {
         working_dir: std::env::temp_dir(),
         system_prompt: "system".to_string(),
         model: None,
+        compaction: Default::default(),
     });
 
     handle.submit(7, "hello");
@@ -80,6 +81,7 @@ async fn cancel_command_is_forwarded() {
         working_dir: std::env::temp_dir(),
         system_prompt: String::new(),
         model: None,
+        compaction: Default::default(),
     });
     handle.submit(1, "hi");
     let _ = drain_until_complete(&mut events).await;

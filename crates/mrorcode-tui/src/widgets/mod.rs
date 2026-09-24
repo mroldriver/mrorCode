@@ -1,6 +1,7 @@
 //! TUI 组件。
 
 pub mod dialog;
+pub mod diff;
 pub mod highlight;
 pub mod home;
 pub mod markdown;

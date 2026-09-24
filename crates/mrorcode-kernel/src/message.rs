@@ -151,6 +151,95 @@ impl Conversation {
                     .is_some_and(|id| known_call_ids.contains(id))
         });
     }
+
+    /// 粗略 token 估算（约 4 字符 / token，含 tool 调用参数），不引入 tokenizer。
+    ///
+    /// 只用于压缩触发判断，误差由阈值留白吸收。
+    pub fn estimate_tokens(&self) -> usize {
+        let chars: usize = self
+            .messages
+            .iter()
+            .map(|m| {
+                m.text.chars().count()
+                    + m.reasoning
+                        .as_deref()
+                        .map(|r| r.chars().count())
+                        .unwrap_or(0)
+                    + m.tool_calls
+                        .iter()
+                        .map(|c| c.name.chars().count() + c.arguments.chars().count())
+                        .sum::<usize>()
+            })
+            .sum();
+        chars / 4 + self.messages.len() * 4
+    }
+
+    /// 压缩：保留首条 system 与最近 `keep_turns` 个 user turn，中间区间折叠为一条注记。
+    ///
+    /// 「一个 turn」= 一条 user 消息及其后到下一个 user 之前的所有消息。
+    /// 折叠后的注记是 system 消息，保证不产生孤儿 tool 结果（内部会再 `repair_pairing`）。
+    /// 返回被折叠的消息条数；无需折叠时返回 0。
+    pub fn compact(&mut self, keep_turns: usize) -> usize {
+        if keep_turns == 0 {
+            return 0;
+        }
+        // 定位全部 user 消息下标。
+        let user_indices: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role == Role::User)
+            .map(|(i, _)| i)
+            .collect();
+        if user_indices.len() <= keep_turns {
+            return 0;
+        }
+        // 被保留的最早 user 下标；其之前（除 system）的区间全部折叠。
+        let keep_from = user_indices[user_indices.len() - keep_turns];
+        let system_prefix: Vec<Message> = self
+            .messages
+            .iter()
+            .take_while(|m| m.role == Role::System)
+            .cloned()
+            .collect();
+        let fold_start = system_prefix.len();
+        if fold_start >= keep_from {
+            return 0;
+        }
+        let folded = &self.messages[fold_start..keep_from];
+        let tool_calls = folded.iter().map(|m| m.tool_calls.len()).sum::<usize>();
+        let first_user = folded
+            .iter()
+            .find(|m| m.role == Role::User)
+            .map(|m| truncate_chars(&m.text, 200))
+            .unwrap_or_else(|| "(no user text)".to_string());
+
+        let note = Message::system(format!(
+            "[compacted {} earlier message(s) incl. {} tool call(s); first request: {}]",
+            folded.len(),
+            tool_calls,
+            first_user
+        ));
+
+        let mut rebuilt: Vec<Message> = Vec::with_capacity(self.messages.len());
+        rebuilt.extend(system_prefix);
+        rebuilt.push(note);
+        rebuilt.extend(self.messages[keep_from..].iter().cloned());
+        let removed = self.messages.len() - rebuilt.len();
+        self.messages = rebuilt;
+        self.repair_pairing();
+        removed
+    }
+}
+
+/// 截断到最多 `max` 个字符（按 UTF-8 字符边界），超出加省略号。
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -183,5 +272,61 @@ mod tests {
         }));
         convo.repair_pairing();
         assert_eq!(convo.messages.len(), 2);
+    }
+
+    fn turn_with_tool(convo: &mut Conversation, user: &str, call: &str) {
+        convo.push(Message::user(user));
+        convo.push(Message::assistant_tool_calls(vec![ToolCall::new(
+            call, "bash",
+        )]));
+        convo.push(Message::tool_result(&ToolResult {
+            call_id: call.into(),
+            content: format!("output for {user}"),
+            is_error: false,
+        }));
+        convo.push(Message::assistant_text(format!("answer for {user}")));
+    }
+
+    #[test]
+    fn compact_keeps_system_and_recent_turns() {
+        let mut convo = Conversation::new();
+        convo.push(Message::system("SYS"));
+        for i in 0..5 {
+            turn_with_tool(&mut convo, &format!("u{i}"), &format!("c{i}"));
+        }
+        let removed = convo.compact(2);
+        assert!(removed > 0);
+        // system 保留
+        assert_eq!(convo.messages[0].role, Role::System);
+        assert_eq!(convo.messages[0].text, "SYS");
+        // 折叠注记
+        assert!(convo.messages[1].text.contains("compacted"));
+        // 最近两轮逐字保留
+        let texts: Vec<&str> = convo.messages.iter().map(|m| m.text.as_str()).collect();
+        assert!(texts.contains(&"answer for u3"));
+        assert!(texts.contains(&"answer for u4"));
+        assert!(!texts.contains(&"answer for u0"));
+        // 无孤儿 tool
+        convo.repair_pairing();
+        let before = convo.messages.len();
+        convo.repair_pairing();
+        assert_eq!(before, convo.messages.len());
+    }
+
+    #[test]
+    fn compact_is_noop_when_few_turns() {
+        let mut convo = Conversation::new();
+        convo.push(Message::system("SYS"));
+        turn_with_tool(&mut convo, "u0", "c0");
+        assert_eq!(convo.compact(4), 0);
+    }
+
+    #[test]
+    fn estimate_tokens_grows_with_content() {
+        let mut small = Conversation::new();
+        small.push(Message::user("hi"));
+        let mut big = Conversation::new();
+        big.push(Message::user("x".repeat(4000)));
+        assert!(big.estimate_tokens() > small.estimate_tokens());
     }
 }

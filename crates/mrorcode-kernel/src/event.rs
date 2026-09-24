@@ -8,8 +8,15 @@ use serde_json::Value;
 pub enum AgentCommand {
     /// 向指定会话发送一条用户消息，开启新一轮对话。
     Submit { session_id: u64, text: String },
+    /// 注入/替换一个会话的会话体（resume 从磁盘恢复时使用）。
+    LoadSession {
+        session_id: u64,
+        conversation: crate::message::Conversation,
+    },
     /// 切换模型（在当前轮次结束后的下一轮生效）。
     SetModel(String),
+    /// 切换 plan 模式：开启后 Risky 工具被直接拒绝（只读 gate）。
+    SetPlanMode(bool),
     /// 回应一个 [`AgentEvent::Request`]（审批等）。
     Respond(u64, Value),
     /// 取消当前轮次。

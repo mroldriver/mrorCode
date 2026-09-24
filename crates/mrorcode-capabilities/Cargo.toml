@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 mrorcode-kernel = { workspace = true }
+mrorcode-config = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
@@ -16,16 +17,26 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+dirs = { workspace = true }
 reqwest = { workspace = true }
 bytes = { workspace = true }
 async-stream = { workspace = true }
 encoding_rs = { workspace = true }
+similar = { workspace = true }
+ignore = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-util = { workspace = true }
 mrorcode-kernel = { workspace = true, features = ["test-support"] }
 futures = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "search"
+harness = false
 
 [features]
 default = ["providers", "tools"]

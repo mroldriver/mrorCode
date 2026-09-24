@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mrorcode_capabilities::approval::ApprovalMiddleware;
+use mrorcode_capabilities::mcp::{bootstrap, McpBootstrap};
 use mrorcode_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider};
 use mrorcode_capabilities::tools::builtin_registry;
-use mrorcode_config::ResolvedProvider;
+use mrorcode_config::{McpServer, ResolvedProvider};
 use mrorcode_kernel::ToolMiddleware;
 
 use crate::persona::coding_persona;
@@ -19,6 +20,10 @@ pub struct Assembly {
     pub model: String,
     /// 同 provider 下可切换模型（含当前 model）。
     pub available_models: Vec<String>,
+    /// 已连接的 MCP server（保持存活；Drop 即 teardown 子进程）。
+    pub mcp: Option<McpBootstrap>,
+    /// MCP 连接诊断（非致命）。
+    pub warnings: Vec<String>,
 }
 
 /// 装配输入：额外携带启动模型覆盖（KV 记住的选择）。
@@ -30,6 +35,8 @@ pub struct InitialModel(pub Option<String>);
 pub struct AssembleOptions {
     /// 跳过全部审批（headless `--dangerously-skip-permissions`）。
     pub skip_permissions: bool,
+    /// 上下文压缩策略（来自 config）。
+    pub compaction: mrorcode_kernel::agent::CompactionPolicy,
 }
 
 /// 用 OpenAI 兼容 provider 装配一个完整 coding runtime。
@@ -47,6 +54,36 @@ pub fn assemble_openai_compat_with_model(
     options: &AssembleOptions,
     initial_model: Option<String>,
 ) -> anyhow::Result<Assembly> {
+    assemble_inner(resolved, working_dir, options, initial_model, None)
+}
+
+/// 完整装配（含 MCP）。MCP 需异步握手，故装配为 async。
+pub async fn assemble(
+    resolved: &ResolvedProvider,
+    working_dir: PathBuf,
+    options: &AssembleOptions,
+    initial_model: Option<String>,
+    mcp_servers: &[McpServer],
+) -> anyhow::Result<Assembly> {
+    let mcp = if mcp_servers.is_empty() {
+        None
+    } else {
+        Some(bootstrap(mcp_servers).await)
+    };
+    let mut assembly = assemble_inner(resolved, working_dir, options, initial_model, mcp)?;
+    if let Some(boot) = &assembly.mcp {
+        assembly.warnings = boot.warnings.clone();
+    }
+    Ok(assembly)
+}
+
+fn assemble_inner(
+    resolved: &ResolvedProvider,
+    working_dir: PathBuf,
+    options: &AssembleOptions,
+    initial_model: Option<String>,
+    mcp: Option<McpBootstrap>,
+) -> anyhow::Result<Assembly> {
     let provider = OpenAiCompatProvider::new(OpenAiCompatConfig {
         base_url: resolved.base_url.clone(),
         api_key: resolved.api_key.clone(),
@@ -55,7 +92,10 @@ pub fn assemble_openai_compat_with_model(
         timeout: Duration::from_secs(300),
     })?;
 
-    let registry = builtin_registry();
+    let mut registry = builtin_registry();
+    if let Some(boot) = &mcp {
+        boot.register_into(&mut registry);
+    }
 
     let mut middleware: Vec<Arc<dyn ToolMiddleware>> = Vec::new();
     if !options.skip_permissions {
@@ -64,7 +104,8 @@ pub fn assemble_openai_compat_with_model(
         )));
     }
 
-    let system_prompt = coding_persona(&working_dir);
+    let tool_names: Vec<String> = registry.names().map(str::to_string).collect();
+    let system_prompt = coding_persona(&working_dir, &tool_names);
 
     // KV 记住的模型若在可用列表内则作为启动覆盖
     let model = match &initial_model {
@@ -79,6 +120,7 @@ pub fn assemble_openai_compat_with_model(
         working_dir,
         system_prompt,
         model: Some(model.clone()).filter(|m| m != &resolved.model),
+        compaction: options.compaction,
     });
 
     Ok(Assembly {
@@ -86,5 +128,7 @@ pub fn assemble_openai_compat_with_model(
         events,
         model,
         available_models: resolved.models.clone(),
+        mcp,
+        warnings: Vec::new(),
     })
 }

@@ -19,3 +19,11 @@ tracing = { workspace = true }
 default = []
 # 测试支持：脚本化 provider / 简易工具，供上层 crate 集成测试使用
 test-support = []
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bench]]
+name = "compaction"
+harness = false

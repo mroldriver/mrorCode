@@ -14,11 +14,21 @@ use mrorcode_kernel::tool::ToolRegistry;
 use mrorcode_kernel::AgentBuilder;
 use mrorcode_kernel::ToolMiddleware;
 
-/// driver → runtime 的命令（M2：多会话 + 模型切换）。
+/// driver → runtime 的命令（M3：多会话 + 模型切换 + resume + plan）。
 #[derive(Clone, Debug)]
 pub enum DriverCommand {
-    Submit { session_id: u64, text: String },
+    Submit {
+        session_id: u64,
+        text: String,
+    },
+    /// 从磁盘恢复的会话体注入 kernel（再 submit 即延续上下文）。
+    Resume {
+        session_id: u64,
+        conversation: mrorcode_kernel::message::Conversation,
+    },
     SetModel(String),
+    /// 切换 plan 模式（只读 gate）。
+    SetPlanMode(bool),
     Respond(u64, Value),
     Cancel,
     Shutdown,
@@ -49,8 +59,19 @@ impl RuntimeHandle {
         });
     }
 
+    pub fn resume(&self, session_id: u64, conversation: mrorcode_kernel::message::Conversation) {
+        let _ = self.commands.send(DriverCommand::Resume {
+            session_id,
+            conversation,
+        });
+    }
+
     pub fn set_model(&self, model: impl Into<String>) {
         let _ = self.commands.send(DriverCommand::SetModel(model.into()));
+    }
+
+    pub fn set_plan_mode(&self, on: bool) {
+        let _ = self.commands.send(DriverCommand::SetPlanMode(on));
     }
 
     pub fn respond(&self, id: u64, value: Value) {
@@ -75,6 +96,8 @@ pub struct RuntimeStart {
     pub system_prompt: String,
     /// 启动即生效的模型覆盖（如 KV 中记住的选择）。
     pub model: Option<String>,
+    /// 上下文压缩策略。
+    pub compaction: mrorcode_kernel::agent::CompactionPolicy,
 }
 
 /// 启动 runtime，返回控制句柄与事件接收端。
@@ -83,6 +106,7 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
         .provider(start.provider)
         .tools(start.tools)
         .system_prompt(start.system_prompt)
+        .compaction(start.compaction)
         .working_dir(start.working_dir);
     if let Some(model) = start.model {
         let options = mrorcode_kernel::ChatOptions {
@@ -122,10 +146,21 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
                                 .commands
                                 .send(AgentCommand::Submit { session_id, text });
                         }
+                        Some(DriverCommand::Resume { session_id, conversation }) => {
+                            active_session = session_id;
+                            let _ = agent_handle
+                                .commands
+                                .send(AgentCommand::LoadSession { session_id, conversation });
+                        }
                         Some(DriverCommand::SetModel(model)) => {
                             let _ = agent_handle
                                 .commands
                                 .send(AgentCommand::SetModel(model));
+                        }
+                        Some(DriverCommand::SetPlanMode(on)) => {
+                            let _ = agent_handle
+                                .commands
+                                .send(AgentCommand::SetPlanMode(on));
                         }
                         Some(DriverCommand::Respond(id, value)) => {
                             let _ = agent_handle.commands.send(AgentCommand::Respond(id, value));

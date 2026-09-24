@@ -17,6 +17,7 @@ pub enum AppCommand {
     OpenModelPicker,
     OpenCommandPalette,
     OpenHelp,
+    TogglePlanMode,
     Quit,
     Interrupt,
 }
@@ -114,6 +115,13 @@ pub fn registry() -> &'static [CommandSpec] {
             default_keys: &[],
         },
         CommandSpec {
+            command: AppCommand::TogglePlanMode,
+            name: "toggle plan mode",
+            desc: "切换 plan 模式（只读）",
+            category: CommandCategory::App,
+            default_keys: &["shift+tab"],
+        },
+        CommandSpec {
             command: AppCommand::Interrupt,
             name: "interrupt",
             desc: "中断当前请求",
@@ -141,6 +149,7 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::OpenModelPicker => "switch_model",
         AppCommand::OpenCommandPalette => "command_palette",
         AppCommand::OpenHelp => "help",
+        AppCommand::TogglePlanMode => "toggle_plan_mode",
         AppCommand::Quit => "quit",
         AppCommand::Interrupt => "interrupt",
     }
@@ -164,6 +173,7 @@ pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
         AppCommand::ToggleSidebar => A::ToggleSidebar,
         AppCommand::OpenModelPicker => A::OpenModelPicker,
         AppCommand::OpenHelp => A::OpenHelp,
+        AppCommand::TogglePlanMode => A::TogglePlanMode,
         AppCommand::Quit => A::Quit,
         AppCommand::Interrupt => A::Interrupt,
         AppCommand::OpenCommandPalette => A::OpenCommandPalette,

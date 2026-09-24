@@ -1,6 +1,7 @@
 //! read_file：只读文件读取工具（Safe）。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -8,12 +9,29 @@ use serde_json::json;
 
 use mrorcode_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
+use crate::path_guard::resolve_existing_file;
+use crate::tools::read_tracker::ReadTracker;
+
 /// 单文件大小硬上限（超出必须用 offset/limit 分页）。
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// 默认/最大行数页。
 pub const DEFAULT_LIMIT: usize = 2000;
 
-pub struct ReadFileTool;
+pub struct ReadFileTool {
+    tracker: Arc<ReadTracker>,
+}
+
+impl ReadFileTool {
+    pub fn new(tracker: Arc<ReadTracker>) -> Self {
+        Self { tracker }
+    }
+}
+
+impl Default for ReadFileTool {
+    fn default() -> Self {
+        Self::new(ReadTracker::new())
+    }
+}
 
 #[derive(Deserialize)]
 struct Args {
@@ -61,12 +79,24 @@ impl Tool for ReadFileTool {
             }
         };
 
-        let path = resolve_inside(ctx.working_dir, &args.path);
+        let path = match resolve_existing_file(ctx.working_dir, &args.path) {
+            Ok(p) => p,
+            Err(message) => {
+                return ToolResult::error(
+                    "read_file",
+                    json!({"path": args.path, "error": message}).to_string(),
+                );
+            }
+        };
+        let track_path = path.clone();
         let result =
             tokio::task::spawn_blocking(move || read_blocking(&path, args.offset, args.limit))
                 .await;
         match result {
-            Ok(Ok(content)) => ToolResult::ok("read_file", content),
+            Ok(Ok(content)) => {
+                self.tracker.mark(&track_path);
+                ToolResult::ok("read_file", content)
+            }
             Ok(Err(message)) => ToolResult::error(
                 "read_file",
                 json!({"path": args.path, "error": message}).to_string(),
@@ -76,15 +106,6 @@ impl Tool for ReadFileTool {
                 json!({"error": format!("join error: {e}")}).to_string(),
             ),
         }
-    }
-}
-
-fn resolve_inside(working_dir: &Path, p: &str) -> PathBuf {
-    let candidate = PathBuf::from(p);
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        working_dir.join(candidate)
     }
 }
 
@@ -131,7 +152,7 @@ mod tests {
         let f = dir.join("a.txt");
         std::fs::write(&f, "l1\nl2\nl3\n").unwrap();
 
-        let tool = ReadFileTool;
+        let tool = ReadFileTool::default();
         let cancel = tokio_util::sync::CancellationToken::new();
         let requester = test_requester().await;
         let ctx = ToolContext {

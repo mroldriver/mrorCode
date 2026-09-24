@@ -28,6 +28,30 @@ pub const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 /// 每轮最大 round 数保险丝。
 pub const DEFAULT_MAX_ROUNDS: usize = 25;
 
+/// 上下文压缩策略（M3）。阈值 0 表示关闭。
+#[derive(Clone, Copy, Debug)]
+pub struct CompactionPolicy {
+    /// 估算 token 超过该值时在下一轮开始前压缩。
+    pub threshold_tokens: usize,
+    /// 保留最近多少个 user turn 原文。
+    pub keep_recent: usize,
+}
+
+impl Default for CompactionPolicy {
+    fn default() -> Self {
+        Self {
+            threshold_tokens: 100_000,
+            keep_recent: 6,
+        }
+    }
+}
+
+impl CompactionPolicy {
+    pub fn is_disabled(&self) -> bool {
+        self.threshold_tokens == 0
+    }
+}
+
 /// 与 agent 通信的句柄。`events` 由唯一 driver 持有轮询。
 pub struct AgentHandle {
     pub commands: UnboundedSender<AgentCommand>,
@@ -44,6 +68,7 @@ pub struct AgentBuilder {
     working_dir: PathBuf,
     chat_options: ChatOptions,
     system_prompt: Option<String>,
+    compaction: CompactionPolicy,
 }
 
 impl Default for AgentBuilder {
@@ -63,6 +88,7 @@ impl AgentBuilder {
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             chat_options: ChatOptions::default(),
             system_prompt: None,
+            compaction: CompactionPolicy::default(),
         }
     }
 
@@ -113,6 +139,12 @@ impl AgentBuilder {
         self
     }
 
+    /// 上下文压缩策略。
+    pub fn compaction(mut self, policy: CompactionPolicy) -> Self {
+        self.compaction = policy;
+        self
+    }
+
     /// 启动 agent owner task，返回控制句柄。
     pub fn spawn(self) -> AgentHandle {
         let provider = self
@@ -131,6 +163,8 @@ impl AgentBuilder {
             max_rounds: self.max_rounds,
             max_tool_result_bytes: self.max_tool_result_bytes,
             chat_options: self.chat_options,
+            compaction: self.compaction,
+            plan_mode: false,
         };
         tokio::spawn(async move {
             run_agent(&mut state, cmd_rx, evt_tx).await;
@@ -155,6 +189,8 @@ struct AgentState {
     max_rounds: usize,
     max_tool_result_bytes: usize,
     chat_options: ChatOptions,
+    compaction: CompactionPolicy,
+    plan_mode: bool,
 }
 
 impl AgentState {
@@ -204,6 +240,8 @@ async fn run_agent(
             max_rounds: state.max_rounds,
             max_tool_result_bytes: state.max_tool_result_bytes,
             chat_options: state.chat_options.clone(),
+            compaction: state.compaction,
+            plan_mode: state.plan_mode,
             requester: broker.handle(),
             events,
             cancel: cancel.clone(),
@@ -246,6 +284,12 @@ async fn run_agent(
                     }
                     Some(AgentCommand::SetModel(model)) => {
                         state.chat_options.model = Some(model);
+                    }
+                    Some(AgentCommand::SetPlanMode(on)) => {
+                        state.plan_mode = on;
+                    }
+                    Some(AgentCommand::LoadSession { session_id, conversation }) => {
+                        state.conversations.insert(session_id, conversation);
                     }
                     Some(AgentCommand::Submit { session_id, text }) => {
                         if running.is_some() {
@@ -303,6 +347,8 @@ struct TurnCtx {
     max_rounds: usize,
     max_tool_result_bytes: usize,
     chat_options: ChatOptions,
+    compaction: CompactionPolicy,
+    plan_mode: bool,
     requester: crate::request::Requester,
     events: UnboundedSender<AgentEvent>,
     cancel: CancellationToken,
@@ -317,6 +363,16 @@ impl TurnCtx {
     async fn run(&mut self) {
         self.emit(AgentEvent::TurnStarted);
         self.conversation.push(Message::user(self.incoming.clone()));
+
+        // 上下文压缩：超阈值时在发起请求前折叠较早轮次（纯函数，driver 不参与）。
+        if !self.compaction.is_disabled()
+            && self.conversation.estimate_tokens() > self.compaction.threshold_tokens
+        {
+            let removed = self.conversation.compact(self.compaction.keep_recent);
+            if removed > 0 {
+                tracing::info!(removed, "compacted conversation before turn");
+            }
+        }
 
         let tool_defs = self.tools.defs();
 
@@ -486,6 +542,29 @@ impl TurnCtx {
                 let risk = tool.risk(&args_value);
                 let mut live_call = call.clone();
 
+                // plan 模式：Risky 工具直接拒绝（优先于审批，不弹窗）。
+                if self.plan_mode && risk == crate::tool::RiskLevel::Risky {
+                    let preview = one_line_preview(&live_call.arguments);
+                    self.emit(AgentEvent::ToolStarted {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: live_call.arguments.clone(),
+                    });
+                    let mut result = ToolResult::error(
+                        call.id.clone(),
+                        json!({
+                            "status": "blocked",
+                            "reason": format!("plan mode: `{}` is a write operation; only read-only tools are allowed ({preview})", call.name),
+                        })
+                        .to_string(),
+                    );
+                    result.content =
+                        truncate_tool_result(&result.content, self.max_tool_result_bytes);
+                    self.emit_tool_result(&call.name, &result);
+                    self.conversation.push(Message::tool_result(&result));
+                    continue;
+                }
+
                 // middleware before（注册序）
                 let mut denied: Option<String> = None;
                 for mw in &self.middleware {
@@ -571,6 +650,17 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
         idx -= 1;
     }
     idx
+}
+
+/// plan gate 提示用的单行参数摘要。
+fn one_line_preview(arguments: &str) -> String {
+    let parsed: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let text = parsed
+        .get("command")
+        .and_then(|v| v.as_str())
+        .or_else(|| parsed.get("path").and_then(|v| v.as_str()))
+        .unwrap_or(arguments);
+    text.chars().take(80).collect()
 }
 
 /// head+tail 中央截断，保证不切断 UTF-8 字符。

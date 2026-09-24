@@ -231,6 +231,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "serde_core",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,6 +976,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1267,6 +1290,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ignore"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b69833ed729dc5aa7d19541d96d6cf8e9137194207a04916d658e43168402f"
+dependencies = [
+ "crossbeam-deque",
+ "globset",
+ "log",
+ "memchr",
+ "regex-automata",
+ "same-file",
+ "walkdir",
+ "winapi-util",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1533,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-agent"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1552,18 +1591,24 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-capabilities"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
  "bytes",
+ "criterion",
+ "dirs",
  "encoding_rs",
  "futures",
+ "ignore",
+ "mrorcode-config",
  "mrorcode-kernel",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "similar",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -1573,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-cli"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1591,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-config"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "dirs",
  "serde",
@@ -1602,9 +1647,10 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-kernel"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
+ "criterion",
  "futures",
  "serde",
  "serde_json",
@@ -1616,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-tui"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -2616,6 +2662,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"

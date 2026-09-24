@@ -34,13 +34,14 @@ use crate::widgets::{home, permission, prompt, session, sidebar, toast};
 const RENDER_COALESCE: Duration = Duration::from_millis(8);
 const SPINNER_TICK: Duration = Duration::from_millis(100);
 
-/// TUI 入口。
-pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
+/// TUI 入口。`resume` 为要恢复的会话 id（来自 `--resume`）。
+pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> {
     let Assembly {
         handle,
         mut events,
         model,
         available_models,
+        ..
     } = assembly;
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -55,11 +56,21 @@ pub async fn run(assembly: Assembly) -> anyhow::Result<()> {
     // KV 中记住的模型选择：AppState 已恢复为初始模型；
     // 若与 config 默认模型不同，补发 SetModel（kernel 下一轮生效）
     let assembly_model = model.clone();
-    let mut state = AppState::new(model, available_models, working_dir, kv);
+    let mut state = AppState::new(model, available_models, working_dir.clone(), kv);
     if state.model != assembly_model {
         let m = state.model.clone();
         handle.set_model(m.clone());
         state.toast(format!("模型：{m}（下一轮生效）"));
+    }
+    // 磁盘历史会话：装入侧栏；--resume 指定的会话直接恢复投影 + 注入 kernel。
+    state.attach_session_store(mrorcode_agent::SessionStore::standard());
+    if let Some(id) = resume {
+        if let Some(record) = state.load_history_session(id) {
+            handle.resume(id, record.conversation);
+            state.toast(format!("已恢复会话 {id}"));
+        } else {
+            state.toast(format!("未找到会话 {id}"));
+        }
     }
     let initial_theme = state.theme.clone();
     prompt::style_textarea(&mut state, &initial_theme);
@@ -207,6 +218,34 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
         return true;
     }
 
+    // 补全浮层（modal 语义）：只在 base 层（无对话框/审批）时活跃
+    if state.completion.as_ref().is_some_and(|c| c.visible()) {
+        match key.code {
+            KeyCode::Up => {
+                if let Some(c) = state.completion.as_mut() {
+                    c.move_selection(-1);
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                if let Some(c) = state.completion.as_mut() {
+                    c.move_selection(1);
+                }
+                return true;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                if state.accept_completion() {
+                    return true;
+                }
+            }
+            KeyCode::Esc => {
+                state.clear_completion();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     let now = std::time::Instant::now();
     let leader_active = state.leader_active(now);
 
@@ -239,7 +278,9 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
 
     // 普通编辑键交给 textarea
     state.esc_first = None;
-    state.prompt.input(*key)
+    let consumed = state.prompt.input(*key);
+    state.refresh_completion();
+    consumed
 }
 
 /// 执行 base 层键位动作；返回 false 表示未消费（按键继续交给 textarea）。
@@ -316,6 +357,10 @@ fn apply_action(
             state.cycle_tool_focus(false);
             true
         }
+        TogglePlanMode => {
+            state.toggle_plan_mode(handle);
+            true
+        }
         ToggleFocusedTool => state.toggle_focused_tool(),
         OpenCommandPalette => {
             state.open_command_palette();
@@ -386,7 +431,14 @@ fn apply_select(
             }
         }
         SelectPurpose::Session => {
-            if let Ok(id) = value.parse::<u64>() {
+            if let Some(rest) = value.strip_prefix("disk:") {
+                if let Ok(id) = rest.parse::<u64>() {
+                    if let Some(record) = state.load_history_session(id) {
+                        handle.resume(id, record.conversation);
+                        state.toast(format!("已恢复会话 {id}"));
+                    }
+                }
+            } else if let Ok(id) = value.parse::<u64>() {
                 state.switch_session(id);
             }
         }
@@ -397,7 +449,7 @@ fn apply_select(
 fn apply_confirm(state: &mut AppState, action: dialog::ConfirmAction) {
     match action {
         dialog::ConfirmAction::DeleteSession(id) => {
-            state.delete_session(id);
+            state.delete_history_session(id);
             state.toast("会话已删除");
         }
     }
@@ -415,6 +467,7 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         AppCommand::OpenThemePicker => state.open_theme_picker(),
         AppCommand::OpenModelPicker => state.open_model_picker(),
         AppCommand::ToggleSidebar => state.toggle_sidebar(),
+        AppCommand::TogglePlanMode => state.toggle_plan_mode(handle),
         AppCommand::Quit => state.should_quit = true,
         AppCommand::Interrupt => {
             if state.phase.is_busy() {
@@ -562,6 +615,9 @@ fn draw_session(
 
     session::render(state, chunks[0], f.buffer_mut(), theme);
     prompt::render_prompt(state, chunks[1], f.buffer_mut(), theme);
+    if let Some(comp) = state.completion.as_ref().filter(|c| c.visible()) {
+        crate::input::render(comp, chunks[1], f.buffer_mut(), theme);
+    }
     let meta = prompt::meta_line(state, theme);
     f.buffer_mut()
         .set_line(chunks[2].x, chunks[2].y, &meta, chunks[2].width);
@@ -657,6 +713,7 @@ mod tests {
             working_dir: PathBuf::from("."),
             system_prompt: String::new(),
             model: None,
+            compaction: Default::default(),
         });
         (h, rx)
     }

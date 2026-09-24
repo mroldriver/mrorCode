@@ -7,7 +7,7 @@ mod headless;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use mrorcode_agent::{assemble_openai_compat, AssembleOptions};
+use mrorcode_agent::AssembleOptions;
 use mrorcode_config::Config;
 
 #[derive(Parser, Debug)]
@@ -38,6 +38,10 @@ struct CommonArgs {
     /// 跳过所有工具审批（仅限可信的自动化场景）。
     #[arg(long = "dangerously-skip-permissions", global = true)]
     skip_permissions: bool,
+
+    /// 恢复一个已持久化的会话 id（TUI 与 run 均可用）。
+    #[arg(long = "resume", global = true)]
+    resume: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -114,8 +118,19 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
             let options = AssembleOptions {
                 skip_permissions: cli.common.skip_permissions,
+                compaction: compaction_policy(&loaded.config),
             };
-            let mut assembly = assemble_openai_compat(&resolved, working_dir, &options)?;
+            let mut assembly = mrorcode_agent::assemble(
+                &resolved,
+                working_dir,
+                &options,
+                None,
+                &loaded.config.mcp.servers,
+            )
+            .await?;
+            for w in &assembly.warnings {
+                eprintln!("mcp warning: {w}");
+            }
             let code = headless::run_headless(&mut assembly, &run.prompt, run.json).await;
             assembly.handle.shutdown();
             std::process::exit(code);
@@ -123,17 +138,32 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         None => {
             let options = AssembleOptions {
                 skip_permissions: cli.common.skip_permissions,
+                compaction: compaction_policy(&loaded.config),
             };
-            let assembly = assemble_openai_compat(
+            let assembly = mrorcode_agent::assemble(
                 &loaded.config.resolve().map_err(|e| {
                     eprintln!("{e}");
                     anyhow::anyhow!("provider not configured")
                 })?,
                 working_dir,
                 &options,
-            )?;
-            mrorcode_tui::run(assembly).await?;
+                None,
+                &loaded.config.mcp.servers,
+            )
+            .await?;
+            for w in &assembly.warnings {
+                eprintln!("mcp warning: {w}");
+            }
+            mrorcode_tui::run(assembly, cli.common.resume).await?;
             std::process::exit(0);
         }
+    }
+}
+
+/// 从 config 生成内核压缩策略。
+fn compaction_policy(config: &mrorcode_config::Config) -> mrorcode_kernel::agent::CompactionPolicy {
+    mrorcode_kernel::agent::CompactionPolicy {
+        threshold_tokens: config.compaction.threshold_tokens,
+        keep_recent: config.compaction.keep_recent,
     }
 }

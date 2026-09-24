@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 
 use tui_textarea::TextArea;
 
-use mrorcode_agent::RuntimeHandle;
+use mrorcode_agent::{RuntimeHandle, SessionStore};
 use mrorcode_kernel::event::AgentEvent;
+use mrorcode_kernel::message::{Conversation, Message, ToolCall};
+use mrorcode_kernel::session::{SessionRecord, SessionSummary};
 
 use crate::commands;
 use crate::keymap::Keymap;
@@ -49,7 +51,7 @@ impl Phase {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ToolStatus {
     Running,
     /// M2 审批前置态（工具创建于 ToolStarted，目前未使用）
@@ -151,6 +153,17 @@ pub struct AppState {
     /// leader 等待窗口截止时刻。
     pub leader_until: Option<Instant>,
 
+    /// plan 模式（只读 gate）；底栏徽标 + 提交时告知 kernel。
+    pub plan_mode: bool,
+
+    /// `@`/`/` 补全浮层状态（None 表示未激活）。
+    pub completion: Option<crate::input::Completion>,
+
+    /// 磁盘会话存储（None 表示 home 不可用，仅进程内）。
+    pub session_store: Option<SessionStore>,
+    /// 磁盘历史会话摘要（侧栏展示）。
+    pub history_sessions: Vec<SessionSummary>,
+
     /// 本地偏好（主题/历史/键位等）。
     pub kv: Store,
 
@@ -241,6 +254,10 @@ impl AppState {
             spinner_ticks: 0,
             keymap,
             leader_until: None,
+            plan_mode: false,
+            completion: None,
+            session_store: None,
+            history_sessions: Vec::new(),
             kv,
             theme,
             theme_name,
@@ -283,11 +300,94 @@ impl AppState {
         self.kv.data.theme_mode = mode.as_str().to_string();
         let _ = self.kv.save();
     }
-
     pub fn toggle_sidebar(&mut self) {
         self.sidebar = !self.sidebar;
         self.kv.data.sidebar = Some(self.sidebar);
         let _ = self.kv.save();
+    }
+
+    /// 切换 plan 模式并通知 kernel（只读 gate）。
+    pub fn toggle_plan_mode(&mut self, handle: &RuntimeHandle) {
+        self.plan_mode = !self.plan_mode;
+        handle.set_plan_mode(self.plan_mode);
+        if self.plan_mode {
+            self.toast("plan 模式：仅只读工具，写操作将被拒绝");
+        } else {
+            self.toast("已退出 plan 模式");
+        }
+    }
+
+    // ---------- 输入补全（@文件 / /命令） ----------
+
+    /// 依据当前光标位置刷新补全浮层；无触发则清空。
+    pub fn refresh_completion(&mut self) {
+        let (row, col) = self.prompt.cursor();
+        let line = self
+            .prompt
+            .lines()
+            .get(row)
+            .map(String::as_str)
+            .unwrap_or("");
+        match crate::input::detect(line, col) {
+            Some((kind, start_col, query)) => {
+                let items = crate::input::build_items(kind, &query, &self.working_dir);
+                if items.is_empty() {
+                    self.completion = None;
+                } else {
+                    self.completion = Some(crate::input::Completion {
+                        kind,
+                        row,
+                        start_col,
+                        end_col: col,
+                        query,
+                        items,
+                        selected: 0,
+                    });
+                }
+            }
+            None => self.completion = None,
+        }
+    }
+
+    pub fn clear_completion(&mut self) {
+        self.completion = None;
+    }
+
+    /// 接受当前选中项：替换 token 段 + 设置 atomic range（整体删除）。
+    pub fn accept_completion(&mut self) -> bool {
+        let Some(comp) = self.completion.take() else {
+            return false;
+        };
+        let Some(item) = comp.current().cloned() else {
+            return false;
+        };
+        // 定位 token 段：从 start_col 到 end_col（以字符计）
+        let (row, _) = self.prompt.cursor();
+        let line = self.prompt.lines().get(row).cloned().unwrap_or_default();
+        let chars: Vec<char> = line.chars().collect();
+        if row != comp.row || comp.start_col > chars.len() || comp.end_col > chars.len() {
+            return false;
+        }
+        let before: String = chars[..comp.start_col].iter().collect();
+        let after: String = chars[comp.end_col..].iter().collect();
+        let new_line = format!("{before}{}{after}", item.insert);
+        let new_col = chars[..comp.start_col].len() + item.insert.chars().count();
+
+        // 用整行替换当前行
+        replace_current_line(&mut self.prompt, row, &new_line);
+        // 光标移到插入文本末尾
+        set_cursor(&mut self.prompt, row, new_col);
+        // 虚拟片段：整段 insert 作为 atomic range（退格整体删除）
+        let start_col = chars[..comp.start_col].len();
+        let _ = self
+            .prompt
+            .try_set_atomic_ranges([tui_textarea::AtomicRange {
+                row,
+                start_col,
+                end_col: start_col + item.insert.chars().count(),
+            }]);
+        self.refresh_completion();
+        true
     }
 
     pub fn push_dialog(&mut self, dialog: Dialog) {
@@ -519,8 +619,86 @@ impl AppState {
         true
     }
 
-    // ---------- 多会话（M2 进程内） ----------
+    // ---------- 磁盘持久化（M3） ----------
 
+    /// 绑定磁盘会话存储并载入历史列表。
+    pub fn attach_session_store(&mut self, store: Option<SessionStore>) {
+        if let Some(s) = &store {
+            self.history_sessions = s.list();
+        }
+        self.session_store = store;
+    }
+
+    /// 从磁盘加载一个历史会话并切换为活动会话；返回记录供注入 kernel。
+    pub fn load_history_session(&mut self, id: u64) -> Option<SessionRecord> {
+        let store = self.session_store.as_ref()?;
+        let record = store.load(id)?;
+        if !self.sessions.iter().any(|s| s.id == id) {
+            self.sessions.push(SessionMeta {
+                id,
+                title: record.title.clone(),
+                phase: Phase::Idle,
+            });
+        }
+        self.buckets
+            .insert(id, project_conversation(&record.conversation));
+        // 切到该会话（若已是活动会话则直接替换投影）
+        if self.active_session == id {
+            self.messages = self.buckets.remove(&id).unwrap_or_default();
+            self.route = Route::Session;
+            self.reset_session_view();
+        } else {
+            let _ = self.switch_session(id);
+        }
+        Some(record)
+    }
+
+    /// 把当前活动会话投影转成 Conversation 并落盘（snapshot + 追加的 transcript）。
+    ///
+    /// 在每轮终态调用；空会话不落盘。
+    pub fn persist_active_session(&mut self) {
+        let Some(store) = self.session_store.clone() else {
+            return;
+        };
+        let view = match self.buckets.get(&self.active_session) {
+            Some(v) => v,
+            None => &self.messages,
+        };
+        if view.is_empty() {
+            return;
+        }
+        let conversation = conversation_from_view(view);
+        let title = self
+            .sessions
+            .iter()
+            .find(|s| s.id == self.active_session)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| mrorcode_kernel::session::derive_title(&conversation));
+        let record = SessionRecord {
+            id: self.active_session,
+            title,
+            updated_at: 0,
+            conversation,
+        };
+        if let Err(e) = store.save_snapshot(&record) {
+            tracing::warn!("save session snapshot failed: {e}");
+            return;
+        }
+        self.history_sessions = store.list();
+    }
+
+    /// 删除磁盘历史会话（若为当前进程会话则一并清理内存）。
+    pub fn delete_history_session(&mut self, id: u64) {
+        if let Some(store) = &self.session_store {
+            if let Err(e) = store.delete(id) {
+                tracing::warn!("delete session failed: {e}");
+            }
+            self.history_sessions = store.list();
+        }
+        self.delete_session(id);
+    }
+
+    // ---------- 多会话（M2 进程内） ----------
     /// 新建会话并切换；当前消息投影收桶。返回新 id。
     pub fn new_session(&mut self) -> u64 {
         self.stash_active();
@@ -597,7 +775,7 @@ impl AppState {
     }
 
     pub fn open_session_picker(&mut self) {
-        let items = self
+        let mut items: Vec<SelectItem> = self
             .sessions
             .iter()
             .map(|s| SelectItem {
@@ -613,6 +791,18 @@ impl AppState {
                 value: s.id.to_string(),
             })
             .collect();
+        // 磁盘历史（未装入本进程的）单列一组，value 前缀 disk: 区分。
+        for h in &self.history_sessions {
+            if self.sessions.iter().any(|s| s.id == h.id) {
+                continue;
+            }
+            items.push(SelectItem {
+                hint: format!("saved · {} msg", h.message_count),
+                group: "On disk".to_string(),
+                label: h.title.clone(),
+                value: format!("disk:{}", h.id),
+            });
+        }
         self.push_dialog(Dialog::Select(SelectState::new(
             "sessions",
             SelectPurpose::Session,
@@ -657,7 +847,7 @@ impl AppState {
             .find(|s| s.id == id)
             .map(|s| s.title.clone())
             .unwrap_or_else(|| "新会话".to_string());
-        let message = format!("删除会话「{title}」？仅进程内，退出即丢失。");
+        let message = format!("删除会话「{title}」？磁盘记录将一并删除。");
         self.push_dialog(Dialog::Confirm(ConfirmState::new(
             "delete session",
             message,
@@ -692,6 +882,10 @@ impl AppState {
     }
 
     pub fn on_runtime_event(&mut self, session_id: u64, ev: AgentEvent, handle: &RuntimeHandle) {
+        let terminal = matches!(
+            ev,
+            AgentEvent::TurnComplete { .. } | AgentEvent::Cancelled | AgentEvent::Error { .. }
+        );
         if session_id == self.active_session {
             // 全局 UI 态仅随活动会话更新
             match &ev {
@@ -752,6 +946,10 @@ impl AppState {
             }
         }
         let _ = handle;
+        // 每轮终态落盘（不参与流式热路径）。
+        if terminal && session_id == self.active_session {
+            self.persist_active_session();
+        }
     }
 
     pub fn resolve_permission(&mut self, decision: &str, handle: &RuntimeHandle) {
@@ -848,7 +1046,6 @@ fn project_event(ev: AgentEvent, messages: &mut Vec<MessageView>) {
         AgentEvent::Usage { .. } | AgentEvent::Request { .. } => {}
     }
 }
-
 impl MessageView {
     pub(crate) fn user(text: String) -> Self {
         let mut doc = MarkdownView::new();
@@ -874,5 +1071,173 @@ impl MessageView {
             is_error: false,
             streaming: true,
         }
+    }
+}
+
+/// 用整行替换输入框的第 row 行（保留其他行）。
+fn replace_current_line(prompt: &mut TextArea<'static>, row: usize, new_line: &str) {
+    prompt.clear_atomic_ranges();
+    prompt.move_cursor(tui_textarea::CursorMove::Jump(row as u16, 0));
+    prompt.move_cursor(tui_textarea::CursorMove::End);
+    for _ in 0..prompt.lines()[row].chars().count() {
+        prompt.delete_char();
+    }
+    prompt.insert_str(new_line);
+}
+
+/// 把光标移动到 (row, col)。
+fn set_cursor(prompt: &mut TextArea<'static>, row: usize, col: usize) {
+    prompt.move_cursor(tui_textarea::CursorMove::Jump(row as u16, col as u16));
+}
+
+/// 消息投影 → kernel 会话体（持久化用）。
+fn conversation_from_view(view: &[MessageView]) -> Conversation {
+    let mut convo = Conversation::new();
+    for m in view {
+        match m.role {
+            Role::User => convo.push(Message::user(m.text.clone())),
+            Role::Assistant => {
+                let mut msg = Message::assistant_text(m.text.clone());
+                if !m.reasoning.is_empty() {
+                    msg.reasoning = Some(m.reasoning.clone());
+                }
+                for t in &m.tools {
+                    msg.tool_calls.push(ToolCall {
+                        id: t.id.clone(),
+                        name: t.name.clone(),
+                        arguments: t.arguments.clone(),
+                    });
+                }
+                convo.push(msg);
+                for t in &m.tools {
+                    convo.push(Message::tool_result(&mrorcode_kernel::tool::ToolResult {
+                        call_id: t.id.clone(),
+                        content: t.output.clone(),
+                        is_error: t.status == ToolStatus::Failed,
+                    }));
+                }
+            }
+        }
+    }
+    convo
+}
+
+/// kernel 会话体 → 消息投影（resume 用）。把 assistant+tool_result 归并到同一 MessageView。
+fn project_conversation(convo: &Conversation) -> Vec<MessageView> {
+    let mut out: Vec<MessageView> = Vec::new();
+    for msg in &convo.messages {
+        match msg.role {
+            mrorcode_kernel::message::Role::System => {}
+            mrorcode_kernel::message::Role::User => out.push(MessageView::user(msg.text.clone())),
+            mrorcode_kernel::message::Role::Assistant => {
+                let mut view = MessageView::assistant();
+                view.streaming = false;
+                view.text = msg.text.clone();
+                view.reasoning = msg.reasoning.clone().unwrap_or_default();
+                view.doc.update(&view.text);
+                for call in &msg.tool_calls {
+                    view.tools.push(ToolView {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        status: ToolStatus::Running,
+                        output: String::new(),
+                    });
+                }
+                out.push(view);
+            }
+            mrorcode_kernel::message::Role::Tool => {
+                if let (Some(last), Some(call_id)) = (out.last_mut(), msg.tool_call_id.as_deref()) {
+                    if let Some(tool) = last.tools.iter_mut().find(|t| t.id == call_id) {
+                        tool.output = msg.text.clone();
+                        tool.status = if msg.is_error {
+                            ToolStatus::Failed
+                        } else {
+                            ToolStatus::Ok
+                        };
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Store as KvStore;
+
+    fn temp_state(tag: &str) -> AppState {
+        let path = std::env::temp_dir().join(format!(
+            "mrorcode-storetest-{}-{tag}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let (kv, _) = KvStore::load_from(&path);
+        AppState::new("m".into(), Vec::new(), PathBuf::from("."), kv)
+    }
+
+    #[test]
+    fn conversation_view_roundtrip_preserves_text_and_tools() {
+        let mut view = Vec::new();
+        view.push(MessageView::user("hello".into()));
+        let mut assistant = MessageView::assistant();
+        assistant.text = "answer".into();
+        assistant.tools.push(ToolView {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{\"command\":\"ls\"}".into(),
+            status: ToolStatus::Ok,
+            output: "listed".into(),
+        });
+        view.push(assistant);
+
+        let convo = conversation_from_view(&view);
+        assert_eq!(convo.messages.len(), 3); // user + assistant + tool_result
+        let back = project_conversation(&convo);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].text, "hello");
+        assert_eq!(back[1].text, "answer");
+        assert_eq!(back[1].tools.len(), 1);
+        assert_eq!(back[1].tools[0].output, "listed");
+        assert_eq!(back[1].tools[0].status, ToolStatus::Ok);
+    }
+
+    #[test]
+    fn persist_and_reload_history_session() {
+        let root = std::env::temp_dir().join(format!("mrorcode-storesess-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = SessionStore::with_root(root.clone());
+
+        let mut state = temp_state("persist");
+        state.attach_session_store(Some(store.clone()));
+        state.messages.push(MessageView::user("remember me".into()));
+        state.persist_active_session();
+        let id = state.active_session;
+
+        // 新状态从磁盘恢复
+        let mut fresh = temp_state("reload");
+        fresh.attach_session_store(Some(store));
+        assert!(fresh.history_sessions.iter().any(|h| h.id == id));
+        let record = fresh.load_history_session(id).unwrap();
+        assert_eq!(record.conversation.messages[0].text, "remember me");
+        assert_eq!(fresh.messages.len(), 1);
+        assert_eq!(fresh.messages[0].text, "remember me");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn completion_accepts_slash_command() {
+        let mut state = temp_state("completion");
+        state.prompt.insert_str("/he");
+        state.refresh_completion();
+        assert!(state.completion.is_some());
+        // 选中 help（fuzzy 命中）
+        assert!(state.accept_completion());
+        let line = state.prompt.lines().join("");
+        assert!(line.starts_with('/'), "got {line:?}");
+        assert!(state.completion.is_none() || state.completion.as_ref().unwrap().visible());
     }
 }

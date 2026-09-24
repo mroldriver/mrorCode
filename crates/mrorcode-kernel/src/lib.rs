@@ -10,6 +10,7 @@ pub mod message;
 pub mod middleware;
 pub mod provider;
 pub mod request;
+pub mod session;
 pub mod tool;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -21,4 +22,5 @@ pub use message::{Conversation, Message, Role, ToolCall};
 pub use middleware::{BeforeOutcome, ToolMiddleware};
 pub use provider::{ChatOptions, LlmProvider, ProviderError, StreamEvent, ToolChoice};
 pub use request::{RequestBroker, Requester};
+pub use session::{SessionRecord, SessionSummary, TranscriptEntry};
 pub use tool::{RiskLevel, Tool, ToolContext, ToolDef, ToolRegistry, ToolResult};

@@ -73,6 +73,8 @@ pub enum Action {
     FocusNextTool,
     FocusPrevTool,
     ToggleFocusedTool,
+    /// 切换 plan 模式（只读 gate）。
+    TogglePlanMode,
 }
 
 impl Action {
@@ -100,6 +102,7 @@ impl Action {
             Action::FocusNextTool => "tool_focus_next",
             Action::FocusPrevTool => "tool_focus_prev",
             Action::ToggleFocusedTool => "tool_toggle",
+            Action::TogglePlanMode => "toggle_plan_mode",
         }
     }
 
@@ -125,6 +128,7 @@ impl Action {
             "tool_focus_next" => Action::FocusNextTool,
             "tool_focus_prev" => Action::FocusPrevTool,
             "tool_toggle" => Action::ToggleFocusedTool,
+            "toggle_plan_mode" => Action::TogglePlanMode,
             _ => return None,
         })
     }
@@ -444,6 +448,7 @@ fn default_bindings() -> Vec<Binding> {
         b(false, key(PressCode::Up), Action::HistoryPrev),
         b(false, key(PressCode::Down), Action::HistoryNext),
         b(false, key(PressCode::Tab), Action::FocusNextTool),
+        // Shift+Tab 切换 plan 模式（FocusPrevTool 保留动作，默认不占用该键）
         b(
             false,
             KeyPress {
@@ -452,7 +457,7 @@ fn default_bindings() -> Vec<Binding> {
                 alt: false,
                 shift: true,
             },
-            Action::FocusPrevTool,
+            Action::TogglePlanMode,
         ),
     ];
 

@@ -17,6 +17,46 @@ pub struct Config {
     /// 默认模型（覆盖 provider 内 model）。
     pub default_model: Option<String>,
     pub providers: HashMap<String, ProviderConfig>,
+    /// 上下文压缩策略（M3）。
+    pub compaction: CompactionConfig,
+    /// MCP stdio servers（M3）。
+    pub mcp: McpConfig,
+}
+
+/// 上下文压缩配置。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionConfig {
+    /// 保留最近多少个 user turn 原文。
+    pub keep_recent: usize,
+    /// 估算 token 超过该值时压缩；0 = 关闭。
+    pub threshold_tokens: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            keep_recent: 6,
+            threshold_tokens: 100_000,
+        }
+    }
+}
+
+/// MCP 配置集合。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpConfig {
+    pub servers: Vec<McpServer>,
+}
+
+/// 单个 stdio MCP server。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
 }
 
 /// 单个 provider 配置。M1 仅 `openai_compat` 一种类型。
@@ -319,5 +359,43 @@ context_window = 200000
             cfg.resolve(),
             Err(ConfigError::UnknownProviderType(t)) if t == "anthropic"
         ));
+    }
+
+    #[test]
+    fn compaction_defaults_and_parse() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.compaction.keep_recent, 6);
+        assert_eq!(cfg.compaction.threshold_tokens, 100_000);
+
+        let cfg: Config = toml::from_str(
+            r#"
+[compaction]
+keep_recent = 3
+threshold_tokens = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.compaction.keep_recent, 3);
+        assert_eq!(cfg.compaction.threshold_tokens, 0);
+    }
+
+    #[test]
+    fn mcp_servers_parse() {
+        let cfg: Config = toml::from_str(
+            r#"
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+env = { FOO = "bar" }
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.mcp.servers.len(), 1);
+        let s = &cfg.mcp.servers[0];
+        assert_eq!(s.name, "filesystem");
+        assert_eq!(s.command, "npx");
+        assert_eq!(s.args.len(), 3);
+        assert_eq!(s.env.get("FOO").map(String::as_str), Some("bar"));
     }
 }

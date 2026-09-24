@@ -74,6 +74,9 @@ pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
             ));
         }
         Phase::Idle => {
+            if state.plan_mode {
+                spans.push(Span::styled("plan ", Style::default().fg(theme.warning)));
+            }
             spans.push(Span::styled(
                 state.model.clone(),
                 Style::default().fg(theme.primary),

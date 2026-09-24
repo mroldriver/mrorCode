@@ -49,7 +49,7 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   without a benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
   Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.
 - Comments and design docs are Chinese — preserve existing Chinese comments and match that tone.
-- Milestone plans: `.trae/documents/mrorcode_m{1,2}_plan.md`; product design: `docs/project-plan-atomcode.md`.
+- Milestone plans: `.trae/documents/mrorcode_m{1,2,3}_plan.md`; product design: `docs/project-plan-atomcode.md`.
 
 ## Versioning
 

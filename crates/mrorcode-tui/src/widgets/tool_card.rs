@@ -101,12 +101,21 @@ pub fn extra_lines(
 
     let mut out: Vec<Line<'static>> = Vec::new();
     let color = output_color(tool, theme);
+    let is_diff = crate::widgets::diff::looks_like_diff(text);
     for l in text.lines().take(MAX_OUTPUT_LINES) {
-        let clipped = clip(l, width);
-        out.push(Line::from(Span::styled(
-            format!("   {clipped}"),
-            Style::default().fg(color),
-        )));
+        if is_diff {
+            out.push(crate::widgets::diff::render_line(
+                &clip(l, width),
+                "   ",
+                theme,
+            ));
+        } else {
+            let clipped = clip(l, width);
+            out.push(Line::from(Span::styled(
+                format!("   {clipped}"),
+                Style::default().fg(color),
+            )));
+        }
     }
     if total > MAX_OUTPUT_LINES {
         out.push(Line::from(Span::styled(

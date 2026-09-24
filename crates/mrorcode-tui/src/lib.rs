@@ -7,6 +7,7 @@ mod app;
 pub mod bench_support;
 mod commands;
 mod fuzzy;
+mod input;
 mod keymap;
 pub mod render;
 mod storage;

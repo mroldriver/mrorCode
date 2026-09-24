@@ -154,30 +154,35 @@ crates/mrorcode-tui/src/
 
 - ✅式门禁同 M1：clippy `-D warnings`、fmt、全部测试。
 
-0. **kernel 多会话 + SetModel**：command/state 改造，单测覆盖多会话消息隔离、
+0. ✅ **kernel 多会话 + SetModel**：command/state 改造，单测覆盖多会话消息隔离、
    SetModel 下一轮生效。
-1. **config models + runtime 桥接**：RuntimeEvent 包 session_id；
+1. ✅ **config models + runtime 桥接**：RuntimeEvent 包 session_id；
    Assembly 返回可选模型列表；agent crate 集成测试。
-2. **storage.rs KV**：原子写、默认值、损坏回退单测；M1 历史与侧栏状态接入。
-3. **主题系统**：vendoring 33 JSON（含 LICENSE/NOTICE 归属）、build.rs、
-   解析器（defs/双值/transparent/循环检测）单测、切换+KV、基准。
-4. **syntect 高亮**：scope→token 映射、未命中回退、block 缓存复用。
-5. **工具折叠卡 + toast**：展开集合、长输出默认折叠；notice 升级 toast 队列。
-6. **fuzzy + Select 对话框**：fuzzy 单测/基准；通用选择组件（TestBackend 测试）。
-7. **命令面板**：注册表 + AppCommand 分派 + 接线已有功能 + Suggested 分组。
-8. **keymap 系统**：模式层/leader/覆盖解析；M1 硬编码键位全部迁移；help 数据打通。
-9. **模型切换对话框**：models 列表/SetModel/KV。
-10. **多会话 UI**：store 分桶、侧栏列表、新建/切换/删除对话框、home 空态接线。
-11. **Help/Confirm 收尾 + 端到端回归**：补 TestBackend 用例（面板过滤、
-    leader 序列、主题切换重绘、会话切换投影隔离）。
-12. **性能门禁**：既有基准不回退（万行帧 ≤ 0.5ms 量级、空闲 0 定时器），
-    新增 fuzzy/主题解析基准；clippy/fmt 全绿。
+2. ✅ **storage.rs KV**：原子写、默认值、损坏回退单测；M1 历史与侧栏状态接入。
+3. ✅ **主题系统**：vendoring 33 JSON（含 LICENSE/NOTICE 归属）、build.rs、
+   解析器（defs/双值/transparent/循环检测）单测、切换+KV、基准（33 主题 1.16ms）。
+4. ✅ **syntect 高亮**：scope→token 映射、未命中回退、block 缓存复用（8 单测；
+   默认语法包无 TypeScript，ts/tsx 回退 JavaScript）。
+5. ✅ **工具折叠卡 + toast**：展开集合（Tab 焦点/Enter 切换）、长输出默认折叠；
+   notice 升级 toast 队列；toast 存活期间才挂 100ms 节拍，空闲仍 0 定时器。
+6. ✅ **fuzzy + Select 对话框**：fuzzy 单测/基准（1 万条 233µs）；
+   通用选择组件 TestBackend 测试（对话框栈位于 `widgets/dialog/`）。
+7. ✅ **命令面板**：注册表 + AppCommand 分派 + 接线已有功能 + Suggested 分组。
+8. ✅ **keymap 系统**：模式层/leader/覆盖解析（ctrl+x，2s 窗口）；
+   M1 硬编码键位全部迁移；help 数据打通（format↔parse round-trip 单测）。
+9. ✅ **模型切换对话框**：models 列表/SetModel/KV；启动时恢复记住的模型。
+10. ✅ **多会话 UI**：store 分桶、侧栏列表（active 高亮/busy spinner）、
+    新建/切换/删除（Confirm）对话框、home 空态接线、leader 1..9。
+11. ✅ **Help/Confirm/Alert + 端到端回归**：TestBackend 用例覆盖面板过滤、
+    leader 序列、主题/模型切换、会话切换投影隔离、help 真实绑定（含用户覆盖）。
+12. ✅ **性能门禁**：既有基准不回退（万行帧 ~0.52ms、增量 markdown ~0.24ms），
+    新增 fuzzy/高亮基准；clippy/fmt 全绿；release 构建通过。
 
 ## 五、依赖新增
 
 | crate | features | 用途 |
 |---|---|---|
-| syntect 0.11 | `default-features=false, default-fancy` | 纯 Rust 语法高亮（无 onig/C） |
+| syntect 5.3 | `default-features=false, default-fancy` | 纯 Rust 语法高亮（无 onig/C） |
 
 fuzzy 评分、KV 存储、键位解析均自写，不引入新 crate。
 
@@ -199,3 +204,68 @@ fuzzy 评分、KV 存储、键位解析均自写，不引入新 crate。
 - 手工冒烟：ctrl+p 过滤执行命令、leader 序列、主题即时切换、
   模型选择下轮生效、新建两个会话来回切换投影隔离、删除确认、help 键位与实际一致；
 - 33 主题均可在选择器列出并切换（个别丑的不阻塞，解析正确即可）。
+
+## 八、实施记录（2026-09-24 完成）
+
+### 8.1 交付状态
+
+- 全部 13 步（0–12）完成；工作区 **121 个测试全绿**（其中 mrorcode-tui 74 个）；
+  `cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --check`、
+  `cargo build --release --workspace` 均通过。
+- 33 个 vendored 主题全部成功解析（dark/light 双模式），可在选择器列出与即时切换。
+
+### 8.2 实际模块落位
+
+```
+crates/mrorcode-tui/src/
+├── fuzzy.rs        # subsequence 评分（query 预编译，filter 零 positions 分配）
+├── commands.rs     # CommandRegistry + AppCommand（纯数据分派）
+├── keymap.rs       # KeyPress 归一化 / parse_binding / format_binding / Keymap
+├── storage.rs      # M2-2（未变位置）
+├── theme.rs        # M2-3（未变位置）
+└── widgets/
+    ├── dialog/
+    │   ├── mod.rs    # 栈分派：Select/Confirm/Alert/Help
+    │   ├── select.rs # fuzzy Select（遮罩/分组/命中高亮/滚动）
+    │   └── forms.rs  # Confirm / Alert / Help
+    ├── highlight.rs  # syntect 适配
+    ├── tool_card.rs  # 折叠卡
+    ├── toast.rs      # toast 浮层
+    └── sidebar.rs    # 会话列表 + 模型/目录徽标
+```
+
+### 8.3 与计划的偏差（均为实现中收敛，无功能裁剪）
+
+1. **syntect 实际版本 5.3**（计划写 0.11）：API 用 `ScopeSelectors::from_str`
+   构造主题项；默认语法包不含 TypeScript，`ts/tsx/typescript` 回退 JavaScript 词法。
+2. **对话框目录落在 `widgets/dialog/`**（计划 2.4 写在 src 根）：随 widget 内聚放置。
+3. **Confirm 提前到步骤 10** 随删除会话一起交付；步骤 11 补 Alert + Help。
+4. **命令面板自身也注册为一条命令**（`command palette`，ctrl+p / leader p），
+   否则 help 中无法列出它的真实绑定。
+5. **fuzzy 权重调参两轮**：streak 8×、首命中位置 2× 惩罚，才满足
+   “连续紧凑匹配优先于词边界散落命中”的直觉排序。
+6. **修了两个 M1 遗留问题**：事件通道关闭（`None`）时主循环不再空转、
+   高亮行截断混用字节长度与显示宽度的 bug（改走 `take_by_width`）。
+7. 接续开发时发现 M2-3/4 代码此前从未真正编译通过（泛型少一个 `>` 的解析根因
+   连带十几个级联报错），已全部修复，历史 release 成功记录是更早代码的产物。
+
+### 8.4 性能基线（criterion，release）
+
+| 基准 | 结果 | 预算/说明 |
+|---|---|---|
+| windowed_frame / 10000_msgs | ~0.52 ms | < 16 ms 帧预算 |
+| markdown/full_reparse | ~0.78 ms | 对照（每帧全排） |
+| markdown/incremental_tail_block | ~0.24 ms | 流式热路径 |
+| fuzzy/filter_10000_items | ~0.23 ms | 计划目标 < 0.5ms |
+| theme/parse_33_bundled | ~1.16 ms | 仅切换时发生 |
+| syntax/highlight_rust_200_lines | ~42.6 ms（≈53µs/行） | 仅闭合代码块一次性执行并入缓存 |
+
+空闲态 0 定时器不变；toast 存活时临时挂 100ms 节拍，过期即撤。
+
+### 8.5 已知遗留（归 M3+，与计划非目标一致）
+
+- 多会话仅进程内，退出即失（删除 Confirm 文案已明示）；磁盘持久化/resume 归 M3。
+- 跨 provider 切换需重建 runtime，归 M3 daemon。
+- leader 超时窗口的撤销提示依赖 100ms 节拍（有 toast 时一定在跑）；
+  极端情况下窗口过期视觉反馈最多滞后一个节拍，不影响正确性。
+- 手工冒烟（真实终端交互）尚未执行；自动化 TestBackend 路径已全覆盖。

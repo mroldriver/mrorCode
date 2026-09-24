@@ -61,7 +61,6 @@ impl ToolMiddleware for DenyAll {
 struct BigTool {
     size: usize,
 }
-
 #[async_trait]
 impl Tool for BigTool {
     fn name(&self) -> &str {
@@ -81,10 +80,29 @@ impl Tool for BigTool {
     }
 }
 
+/// 默认 Risky 的工具（plan 模式应被拒绝）。
+struct RiskyTool;
+
+#[async_trait]
+impl Tool for RiskyTool {
+    fn name(&self) -> &str {
+        "risky"
+    }
+    fn description(&self) -> &str {
+        "writes something"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    // 不覆盖 risk() → 默认 Risky
+    async fn execute(&self, _arguments: &str, _ctx: &ToolContext<'_>) -> ToolResult {
+        ToolResult::ok("risky-1", "wrote")
+    }
+}
+
 /// 发出一个 delta 后永久挂起的 provider（用于取消测试）。
 #[derive(Default)]
 struct PendingProvider;
-
 #[async_trait]
 impl LlmProvider for PendingProvider {
     fn model_name(&self) -> &str {
@@ -414,4 +432,106 @@ async fn tool_result_is_truncated_head_tail() {
         .unwrap();
     assert!(content.contains("truncated"));
     assert!(content.len() < 1200);
+}
+
+#[tokio::test]
+async fn loaded_session_continues_context() {
+    let provider = RecordingProvider {
+        calls: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+    };
+    let calls = Arc::clone(&provider.calls);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .system_prompt("sys")
+        .spawn();
+
+    // 注入一个含 2 条历史的会话（无 system），再 submit。
+    let mut convo = mrorcode_kernel::Conversation::new();
+    convo.push(mrorcode_kernel::Message::user("old-question"));
+    convo.push(mrorcode_kernel::Message::assistant_text("old-answer"));
+    handle
+        .commands
+        .send(AgentCommand::LoadSession {
+            session_id: 5,
+            conversation: convo,
+        })
+        .unwrap();
+    submit_and_wait(&mut handle, 5, "new-question").await;
+
+    let recorded = calls.lock().await.clone();
+    // 2 条历史 + 新 user = 3 条
+    assert_eq!(recorded[0].0, 3);
+}
+
+#[tokio::test]
+async fn plan_mode_blocks_risky_tools() {
+    let mut reg = ToolRegistry::new();
+    reg.insert(Arc::new(RiskyTool));
+    let provider = ScriptedProvider::new(vec![
+        single_tool_call_script("", "c1", "risky", json!({})),
+        text_script("done"),
+    ]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(reg)
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::SetPlanMode(true))
+        .unwrap();
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "edit something".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult { name, content, .. } if name == "risky" => Some(content),
+            _ => None,
+        })
+        .expect("risky result");
+    assert!(result.contains("plan mode"), "{result}");
+}
+
+#[tokio::test]
+async fn plan_mode_allows_safe_tools() {
+    let mut reg = ToolRegistry::new();
+    reg.insert(Arc::new(BigTool { size: 4 }));
+    let provider = ScriptedProvider::new(vec![
+        single_tool_call_script("", "b1", "big", json!({})),
+        text_script("done"),
+    ]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(reg)
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::SetPlanMode(true))
+        .unwrap();
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "read".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    // BigTool 为 Safe：应正常执行而非被 plan 拒绝
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult { name, content, .. } if name == "big" => Some(content),
+            _ => None,
+        })
+        .expect("big result");
+    assert!(!result.contains("plan mode"));
 }
