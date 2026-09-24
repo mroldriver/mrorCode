@@ -1,1 +1,0 @@
-- mrorcode 版本号唯一来源是根 Cargo.toml 的 [workspace.package] version（六个 crate 都用 version.workspace = true）；项目规定每次改动代码都要同步提升该版本号。

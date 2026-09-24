@@ -11,7 +11,7 @@ mrorcode-config  (leaf, readable by anyone)
 ## Commands (all verified on this tree)
 
 ```bash
-cargo test --workspace                          # ~121 tests, all green
+cargo test --workspace                          # ~179 tests, all green
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 cargo build --release                           # -> target/release/mrorcode.exe
@@ -22,10 +22,10 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   `pwsh -File scripts/install.ps1`. On a fresh clone, run `scripts/bootstrap-tools.ps1` first (see Gotchas).
 - Root `cargo build` / `cargo test` only cover `mrorcode-cli` (`default-members` in the root
   `Cargo.toml`). Always pass `--workspace` or `-p <crate>`.
-- End-to-end without a real API: `python .tools/mock_sse.py 8931`, then
-  `MRORCODE_BASE_URL=http://127.0.0.1:8931/v1 mrorcode run --json "hi"`.
 - Config precedence: env (`MRORCODE_BASE_URL/_API_KEY/_MODEL/_PROVIDER`) > `$MRORCODE_CONFIG`
   > `~/.mrorcode/config.toml`. `config.example.toml` is reference-only (not auto-installed).
+- Without a real API: provider tests use `wiremock` against a local mock HTTP server; the kernel's
+  `test-support` feature provides `ScriptedProvider`/`EchoTool` for runtime integration tests.
 
 ## Architecture rules
 
@@ -51,7 +51,8 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   without a benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
   Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.
 - Comments and design docs are Chinese — preserve existing Chinese comments and match that tone.
-- Milestone plans: `docs/mrorcode_m{1,2,3}_plan.md`; product design: `docs/project-plan-atomcode.md`.
+- Docs: product design is `docs/project-plan-atomcode.md`; completed milestone plans (M1–M3) are
+  archived in `docs/roadmap.md`; index is `docs/README.md`. Never rewrite archived milestone history.
 
 ## Versioning
 
