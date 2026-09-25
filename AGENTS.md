@@ -11,7 +11,7 @@ mrorcode-config  (leaf, readable by anyone)
 ## Commands (all verified on this tree)
 
 ```bash
-cargo test --workspace                          # ~179 tests, all green
+cargo test --workspace                          # ~224 tests, all green
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 cargo build --release                           # -> target/release/mrorcode.exe
@@ -51,8 +51,9 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   without a benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
   Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.
 - Comments and design docs are Chinese — preserve existing Chinese comments and match that tone.
-- Docs: product design is `docs/project-plan-atomcode.md`; completed milestone plans (M1–M3) are
-  archived in `docs/roadmap.md`; index is `docs/README.md`. Never rewrite archived milestone history.
+- Docs: product design is `docs/project-plan-atomcode.md`; `docs/roadmap.md` holds the archived
+  M1–M3 plans plus the completed M4 plan (M5 is direction-only); index is `docs/README.md`.
+  Never rewrite archived milestone history — append new milestones as new sections.
 
 ## Versioning
 

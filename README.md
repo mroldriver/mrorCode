@@ -7,7 +7,13 @@ A fast terminal AI coding agent — Rust 编写的终端 AI 编码 Agent，TUI �
 ## 特性
 
 - **多轮工具闭环**：`read_file` / `write_file` / `edit_file` / `glob` / `grep` / `bash`，工具结果自动回灌模型。
-- **流式 TUI**：增量 Markdown、syntect 语法高亮、工具折叠卡、diff 着色、toast 通知。
+- **`task` 只读子 agent**：模型可委派只读研究子任务（读/搜工具集），结果回灌为普通工具卡。
+- **流式 TUI**：增量 Markdown、syntect 语法高亮、工具折叠卡、diff 着色、toast 通知（按级别着色）。
+- **diff viewer**：`leader d` 打开 unified/split 双视图，万行 diff 窗口化渲染 < 16ms。
+- **reasoning 折叠**：思考过程默认折叠为一行，`leader r` 展开。
+- **rewind**：`leader w` 回退当前会话到历史某轮之前（仅内存生效，磁盘 transcript 保留）。
+- **多会话标签栏**：`leader [` / `leader ]`（或 `leader 1..9`）切换标签页。
+- **鼠标与选区复制**：滚轮/点击/拖选可用；选中内容按屏幕所见提取，复制走 OSC 52，退出不丢。
 - **主题**：内置 vendored 的 33 个 opencode MIT 主题（dark/light 双模式）。
 - **命令面板与键位**：`ctrl+p` 命令面板、leader 键（默认 `ctrl+x`）、用户键位覆盖。
 - **多会话 + 磁盘持久化**：会话列表、新建/切换/删除；transcript + 快照落盘，`--resume` 恢复。
@@ -121,9 +127,14 @@ env = { FOO = "bar" }
 | `ctrl+n` / `leader n` | 新建会话 |
 | `ctrl+l` / `leader l` | 会话列表 |
 | `leader t` / `leader m` | 切换主题 / 模型 |
+| `leader r` | 展开/收起 reasoning 思考块 |
+| `leader d` | 打开当前工具卡的 diff viewer |
+| `leader w` | rewind：回退当前会话到历史某轮之前 |
+| `leader [` / `leader ]`（或 `leader 1..9`） | 上/下会话标签切换 |
 | `f2` / `leader b` | 切换侧栏 |
 | `shift+tab` | 切换 plan 模式 |
 | `pageup` / `pagedown` | 滚动消息 |
+| 鼠标滚轮 / 点击 / 拖选 | 滚动 / 交互 / 选区（复制走 OSC 52） |
 
 leader 键默认 `ctrl+x`（2s 超时窗口）。键位可通过 `~/.mrorcode/state.json` 的 `keybinds` 覆盖。
 
@@ -153,8 +164,9 @@ kernel 的 `test-support` feature 提供 `ScriptedProvider`/`EchoTool` 供集成
 
 ## 状态
 
-`0.4.0` — M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）已完成；M4（TUI 精致化）与
-M5（硬化发布）规划中，见 [docs/roadmap.md](docs/roadmap.md) 末节。
+`0.5.0` — M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）、M4（TUI 精致化：标签栏、diff viewer、
+reasoning 折叠、鼠标/选区/剪贴板、which-key、侧边栏、rewind、`task` 子 agent）已完成；M5（硬化发布）规划中，
+见 [docs/roadmap.md](docs/roadmap.md) 末节。
 
 ## License
 

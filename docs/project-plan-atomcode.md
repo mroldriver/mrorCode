@@ -2,9 +2,9 @@
 
 > Rust 编写的终端 AI 编码 Agent，TUI 视觉/交互对标 OpenCode，后端架构借鉴 AtomCode。
 >
-> **进度：M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）均已完成**，
-> 当前版本 `0.4.0`，工作区 179 个测试全绿。实施细节、实测基线与偏差见
-> [roadmap.md](roadmap.md)；后续方向见其末节「M4/M5 后续里程碑方向」。
+> **进度：M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）、M4（TUI 精致化）均已完成**，
+> 当前版本 `0.5.0`，工作区 224 个测试全绿。实施细节、实测基线与偏差见
+> [roadmap.md](roadmap.md)；后续方向见其末节「M5 后续里程碑方向」。
 
 ---
 
@@ -47,7 +47,7 @@ TUI 遵循单一所有权铁律：**agent/会话权威状态只在 runtime；TUI
 
 ```
 mrorCode/
-├── Cargo.toml                    # workspace 根（version = 0.4.0，default-members = cli）
+├── Cargo.toml                    # workspace 根（version = 0.5.0，default-members = cli）
 ├── crates/
 │   ├── mrorcode-kernel/          # L0 中立内核 — Agent 抽象、消息、工具、事件、会话数据
 │   ├── mrorcode-capabilities/    # L1 能力 — provider / 工具 / MCP / 会话持久化 / 审批
@@ -121,19 +121,19 @@ cli ─┬─> tui ─> agent ─> capabilities ─> kernel
 - [x] 侧边栏：会话列表 + 工作目录/模型徽标
 - [x] 主题系统（33 个内置 JSON + dark/light）
 - [x] 代码审查视图（write/edit 结果的 unified diff 着色）
-- [ ] 会话标签页（多会话并排）——归 M4
-- [ ] 剪贴板支持（复制代码块）——归 M4
+- [x] 会话标签页（多会话并排）
+- [x] 剪贴板支持（拖选复制，OSC 52 兜底）
 
 ### P2 — 高级特性
 - [x] 语法高亮（syntect，闭合代码块一次性高亮并入缓存）
 - [x] `/` 斜杠命令与 `@` 文件补全
 - [x] plan 模式（Shift+Tab，只读 gate）
-- [ ] 思考过程折叠 / 展开——归 M4
-- [ ] 子代理 / 团队视图——归 M4+
-- [ ] rewind 时间线——归 M4
-- [ ] 图片附件渲染——归 M4
+- [x] 思考过程折叠 / 展开
+- [x] 子代理（`task` 只读子 agent；实时嵌套视图延后）
+- [x] rewind 时间线
+- [ ] 图片附件渲染——归 M5
 - [ ] 插件系统 / 国际化——归 M5
-- [ ] 鼠标交互（滚动、点击、选择）——归 M4
+- [x] 鼠标交互（滚动、点击、选择）
 
 ---
 
@@ -144,7 +144,7 @@ cli ─┬─> tui ─> agent ─> capabilities ─> kernel
 | **M1 骨架** | 跑通最小闭环：发消息 → 调 LLM → 流式显示 → 工具调用 | ✅ 2026-09-23 |
 | **M2 TUI 核心体验** | 主题/高亮/折叠卡/对话框/命令面板/键位/多会话 | ✅ 2026-09-24 |
 | **M3 Agent 能力** | 编辑/搜索工具、持久化+resume、压缩、MCP、输入层、plan、路径 gate | ✅ 2026-09-24 |
-| **M4 TUI 精致化** | 多会话标签、diff viewer、reasoning 折叠、子 agent、rewind、鼠标/剪贴板 | ⏳ 待启动 |
+| **M4 TUI 精致化** | 多会话标签、diff viewer、reasoning 折叠、子 agent、rewind、鼠标/剪贴板 | ✅ 2026-09-25 |
 | **M5 硬化发布** | Anthropic provider、daemon、跨平台 CI、conformance、打包分发 | ⏳ 待启动 |
 
 各里程碑的步骤、验收标准与完成报告见 [roadmap.md](roadmap.md)。

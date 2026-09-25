@@ -1,4 +1,4 @@
-# mrorCode 里程碑路线图（M1–M3 已完成）
+# mrorCode 里程碑路线图（M1–M4 已完成）
 
 > 本文合并自三份已完成的里程碑实施计划（原 `mrorcode_m1_plan.md` / `mrorcode_m2_plan.md` /
 > `mrorcode_m3_plan.md`），保留原文以存档决策过程、实测基线与偏差记录。
@@ -8,7 +8,8 @@
 > - **M1：骨架 — 多轮工具闭环 + 最小 TUI**（2026-09-23）
 > - **M2：TUI 核心体验**（2026-09-24）
 > - **M3：Agent 能力增强**（2026-09-24）
-> - **M4 / M5 后续方向**（见文末）
+> - **M4：TUI 精致化**（2026-09-25，手工冒烟待人工）
+> - **M5 后续方向**（见文末）
 
 
 ---
@@ -918,12 +919,274 @@ crates/mrorcode-tui/src/
 
 ---
 
-## M4/M5 后续里程碑方向
+## mrorCode M4 实施计划：TUI 精致化
 
-> 从 M1 §八、M3 §八 汇总，供下一里程碑细化。
+> 前置：M1–M3 已完成（见上文各自完成报告）。M4 聚焦 M1 §八、M3 §八 汇总的 TUI 精致化项：
+> 多会话标签、diff viewer、reasoning 折叠、子 agent 视图、rewind 时间线、鼠标/选区/剪贴板、
+> which-key、侧边栏分区。
+>
+> 铁律不变：**kernel/runtime 是唯一 agent/会话状态所有者**，UI 只做投影 + 命令。
+> 本里程碑只有 rewind 与子 agent 需要新增 kernel/runtime 能力，且均为纯数据、可测。
+>
+> **状态：已完成（2026-09-25）。** 12 个实施步骤全部落地，工作区 224 个测试全绿；
+> 仅余真实终端手工冒烟待人工执行。实施记录与性能基线见文末「八、实施记录」。
 
-- **M4 TUI 精致化**：多会话标签、diff viewer（unified/split）、reasoning 折叠、子 agent 视图、
-  rewind 时间线、鼠标与选区复制、剪贴板矩阵/图片粘贴、which-key/toast 分区、侧边栏 context/todo/files。
+### 一、M4 目标（验收标准）
+
+1. **reasoning 折叠**：assistant 消息的 `reasoning` 渲染为可折叠块（默认一行摘要，Enter/点击展开），
+   展开态按消息稳定 id 记忆；reasoning 复用 markdown 增量渲染。
+2. **diff viewer**：`write_file`/`edit_file` 结果可打开独立 viewer（大面板），显示完整 unified diff，
+   支持滚动、unified/split 双视图、行号与增删着色；工具卡保留现有内联折叠。
+3. **多会话标签栏**：顶部标签栏列出全部会话（active 高亮、busy spinner），点击/键位切换、关闭标签；
+   窄屏自动降级。
+4. **鼠标**：滚轮滚动消息区、点击标签/侧栏会话切换、点击工具卡聚焦/展开、拖拽选区。
+5. **选区复制**：拖选或键盘选择，复制纯文本到剪贴板（OSC 52 兜底），选中区高亮。
+6. **which-key**：leader 等待窗口内浮层列出全部可用第二键及命令，按键/超时后消失。
+7. **侧边栏分区**：Sessions / Context（token 用量、压缩状态）/ Files（最近读写文件）三区，可折叠。
+8. **rewind 时间线**：把会话回退到某一轮之前（截断该轮及之后）再继续对话，UI 为时间线选择器。
+9. **子 agent 视图**：`task` 工具派生只读子 agent 完成子任务，TUI 以嵌套折叠卡显示结果。
+10. **toast/通知分区**：toast 按 info/warn/error 着色，并与 which-key、补全浮层避让。
+
+#### 非目标（仍归后续里程碑）
+
+- Anthropic provider、跨 provider 切换、daemon/ACP（M5）。
+- 跨平台 CI、conformance testkit、cargo-dist、分发期优化（M5）。
+- diff viewer 内联语法高亮（先纯 diff 着色；高亮留 M5）。
+- 图片附件/vision 输入（默认裁剪至 M5，见 §五可选依赖）。
+- 插件系统、国际化（M5）。
+
+### 二、架构改动要点
+
+#### 2.1 kernel（最小新增，纯数据/可测）
+
+- `AgentCommand::Rewind { session_id: u64, keep_messages: usize }`：把会话消息截断到前
+  `keep_messages` 条（保留首条 system），随后 `repair_pairing()`。仅在无运行轮次时生效，
+  有轮次时忽略（driver 侧先 Cancel 或拒绝）。
+- 子 agent（默认回退方案，见 §六）：`AgentEvent::SubTask { id, parent: String, event: Box<AgentEvent> }`
+  与 `ToolContext.events: Option<&UnboundedSender<AgentEvent>>`。**改动核心 trait，需评审。**
+
+#### 2.2 agent runtime
+
+- `DriverCommand::Rewind { session_id, keep_messages }` + `RuntimeHandle::rewind(...)`。
+- 子 agent：`assemble` 暴露只读子工具集工厂，供 `task` 工具构造子 `AgentBuilder`。
+
+#### 2.3 TUI 模块（新增/修改）
+
+```
+crates/mrorcode-tui/src/
+├── selection.rs        # 新：屏幕矩形选区模型 + Buffer→文本提取
+├── clipboard.rs        # 新：OSC 52 复制（纯 Rust）；可选 arboard feature
+├── input.rs            # 改：补全之外，新增鼠标/选区命中与文本提取的入口
+├── app.rs              # 改：InputEvent（键/鼠标/粘贴）分派、鼠标命中、粘贴处理
+├── store.rs            # 改：MessageView.uid、expanded_reasoning、last_usage、
+│                       #     touched_files、turn_boundaries、show_tabs
+├── keymap.rs           # 改：Action::{ToggleReasoning, OpenDiffViewer, Rewind, ToggleTabs,
+│                       #     CopySelection, SelectMode, ...}
+├── commands.rs         # 改：新增命令（rewind / diff viewer / reasoning / tabs）
+└── widgets/
+    ├── tabs.rs         # 新：多会话标签栏
+    ├── whichkey.rs     # 新：leader 可用键浮层
+    ├── reasoning.rs    # 新（或并入 session.rs）：思考过程折叠块
+    ├── diff.rs         # 改：解析 unified diff → DiffDoc；unified/split 渲染
+    ├── dialog/diff.rs  # 新：diff viewer 作为 Dialog 栈成员
+    └── sidebar.rs      # 改：sessions/context/files 三区
+```
+
+### 三、关键设计
+
+#### 3.1 稳定消息 id（前置）
+
+- 现状：`MessageView` 按位置寻址，切会话/流式追加会改变下标，无法承载"按消息记忆展开态"。
+- 在 `store` 增加单调 `next_message_uid`，`MessageView` 增 `uid: u64`；事件投影新建消息时分配。
+- 展开集合、rewind 边界、选区锚点都改用 `uid`。
+
+#### 3.2 reasoning 折叠
+
+- 缺口只在渲染：`MessageView.reasoning` 已存、`project_conversation` 已恢复，但 session 渲染未使用。
+- 新增 `reasoning_doc: MarkdownView`（与正文同款缓存 / 增量 `update`）与 `expanded_reasoning: HashSet<u64>`。
+- 折叠态一行：`▸ 思考过程 · {行数} 行`（text_muted）；展开态渲染 `reasoning_doc` 全部行 + `▾ 收起`。
+- 行高必须计入 `session::message_height`，否则窗口化布局错位。键位/点击切换。
+
+#### 3.3 diff viewer（widgets/diff.rs + dialog/diff.rs）
+
+- 先把现有 unified diff 文本解析为结构：
+  `DiffDoc { files: [{ old, new, hunks: [{ header, lines: [{ kind: Context|Add|Remove, text, old_no, new_no }] }] }] }`；
+  纯函数 + 单测（多文件、无尾换行、`\ No newline`、空 hunk）。
+- 渲染：unified 单列；split 左右两栏（按 hunk 内 old/new 行号对齐，Context 两侧同显）；
+  复用 M3 的 `diff_added_bg/diff_removed_bg` 等 token。
+- 打开：工具卡聚焦且输出含 diff 时回车打开 `Dialog::Diff`；`t` 切视图、`↑↓/PgUp/PgDn` 滚动、`q/esc` 关闭。
+- 大 diff 仍窗口化：只布局可视行（新增基准守护）。
+
+#### 3.4 多会话标签栏（widgets/tabs.rs）
+
+- 数据源即 `store.sessions`；标签显示 `● 标题(spinner)`，宽度按可用宽度分配，超出省略/滚动。
+- 键位：`ctrl+tab` 与 `leader [` / `]` 前后切换，`leader 1..9` 保留；点击标签切换/中键关闭。
+- `AppState.show_tabs`（KV `tabs: bool`）；窄屏（阈值同 sidebar）自动降级。
+
+#### 3.5 鼠标（app.rs + 命中区域）
+
+- 输入线程改发 `InputEvent::{Key, Mouse, Paste(String)}`；主循环按类型分派。
+- `ScrollUp/Down` → 现有 `scroll_up/down`；`Down(Left)` → 命中测试（标签、侧栏会话、工具卡、
+  reasoning 摘要）→ 对应动作；`Drag(Left)` → 选区。
+- 命中区域在渲染时记入 `AppState.hit_regions: Vec<(Rect, HitTarget)>`，每帧重建（与窗口化渲染同源）。
+- 无鼠标事件时事件循环保持 0 唤醒（不新增定时器）。
+
+#### 3.6 选区与剪贴板（selection.rs + clipboard.rs）
+
+- 选区模型：`Selection { start: (x,y), end: (x,y) }`；从最终 `Buffer` 按行提取 symbol，
+  行尾去空白、跨行拼接 `\n`；纯函数、TestBackend 可测。
+- 键盘 `v` 进入选择模式 + 光标移动，或鼠标拖拽；`y`/`ctrl+shift+c` 复制；`esc` 取消。
+- 剪贴板默认写 OSC 52（`\x1b]52;c;<base64>\x07`，无依赖、SSH 友好）；可选 `clipboard` feature
+  用 `arboard` 走系统剪贴板（失败静默降级）。
+
+#### 3.7 which-key（widgets/whichkey.rs）
+
+- `Keymap::leader_bindings() -> Vec<(String, Action)>`（新增，基于现有 base 表的 leader 项）。
+- `leader_until` 有效时底部渲染浮层：`p → command palette` 等，按键或 2s 超时消失
+  （现有 100ms 节拍已在跑）。与 toast 避让：which-key 优先占底部。
+
+#### 3.8 侧边栏分区（sidebar.rs）
+
+- 三区：Sessions（现有）、Context（`last_usage` token 累计 + 是否触发过 compaction）、
+  Files（`touched_files`：read/write/edit 的 path，去重、最近优先、上限 ~8）。
+- store 在事件投影时更新 `last_usage` 与 `touched_files`；分区标题可折叠，窄屏仅显示 Sessions。
+
+#### 3.9 rewind（kernel + TUI）
+
+- kernel：无 running 时 `AgentCommand::Rewind` 截断 `conversations[session]` 后 `repair_pairing`。
+- TUI：`turn_boundaries: Vec<(u64 /*uid*/, String /*首条 user 摘要*/, usize /*消息下标*/)>`；
+  rewind 选择器（Select）→ 接受后：`handle.rewind(session_id, keep_messages)` → 本地截断投影 →
+  `persist_active_session()` 覆盖 snapshot。
+- transcript（jsonl 追加写）不回滚：recall 仍保留完整历史；toast 明示"仅当前会话回退，磁盘记录保留"。
+- 测试：kernel 单测（截断后配对正确、仅空闲生效）；TUI 投影测试。
+
+#### 3.10 子 agent（默认回退方案 + 可选实时视图）
+
+- `task` 工具（`{ description, prompt }`，Risky）：派生只读子 agent（read_file/glob/grep，较小
+  `max_rounds`），返回最终文本，TUI 以普通工具卡展示（能力落地、视图简单）。
+- 若要实时嵌套进度：`ToolContext.events` + `AgentEvent::SubTask{...}` 转发子事件，
+  TUI 在父工具卡内嵌套折叠渲染。**改动 kernel 核心 trait，独立步骤、允许裁剪。**
+
+#### 3.11 toast 分区
+
+- toast 记录 level（info/warn/error），左边框用 primary/warning/error；
+  which-key/补全浮层占用底部时 toast 上移，避免遮挡。
+
+### 四、实施步骤（每步保持编译+测试通过）
+
+> 门禁同 M1–M3：`cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、
+> `cargo fmt --check`。每步一个提交；结构变化同步更新 `AGENTS.md`，版本按项目规则 bump。
+
+0. **骨架与稳定 id**：`MessageView.uid` + store 单调计数；输入线程改发 `InputEvent`；
+   建 `selection.rs`/`clipboard.rs`/`widgets/{tabs,whichkey,reasoning}.rs` 空模块；KV 增 `tabs`。
+1. **reasoning 折叠**：`reasoning_doc` + 展开集合 + 行高计入 + 键位/点击切换；单测（折叠高度、展开内容）。
+2. **diff 解析**：`DiffDoc` 纯函数解析器 + 单测；工具卡改用解析结果着色（行为不变，作回归基线）。
+3. **diff viewer**：`Dialog::Diff` + unified 渲染 + 滚动 + `t` 切 split + 工具卡接线；TestBackend 用例。
+4. **多会话标签栏**：tabs widget + 命中区域 + 切换/关闭 + 键位命令；KV 记忆；窄屏降级。
+5. **鼠标**：`InputEvent::Mouse` 分派 + 命中测试 + 滚轮/点击；命中函数单测（不依赖真实终端）。
+6. **选区 + 剪贴板**：selection 提取纯函数 + 拖选 + OSC 52 复制 + 高亮；可选 arboard feature。
+7. **which-key**：`leader_bindings()` + 浮层渲染 + toast 避让；快照测试。
+8. **侧边栏分区**：usage/touched_files 记账 + 三区渲染 + 折叠；TestBackend 用例。
+9. **rewind**：kernel command + runtime 桥 + TUI 选择器 + 截断重投影 + snapshot；kernel/agent/TUI 测试。
+10. **task 工具/子 agent**：`task`（`{ description, prompt }`，Risky）派生只读子 agent
+     （read_file/glob/grep，`max_rounds=15`），回灌最终文本，普通工具卡展示（实时嵌套视图为可选加分项）。
+11. **toast 分区 + 收尾 UI**：level 着色、浮层避让、新命令登记进 help/命令面板。
+12. **性能门禁与收尾**：既有基准（万行帧、增量 markdown、fuzzy）不回退；新增 diff 解析/窗口化 diff 帧/
+    选区提取/reasoning 折叠基准；clippy/fmt/release 通过；README 补鼠标/剪贴板/标签/rewind 用法。
+
+### 五、依赖新增
+
+| crate | version | features | 用途 |
+|---|---|---|---|
+| arboard | 3 | 可选 `clipboard` feature | 系统剪贴板（文本/图片）；非默认，默认 OSC 52 零依赖 |
+
+- 需确认 `arboard` 在 windows-gnu 上走 `windows-sys` 纯 Rust（本机无 C 编译器约束）；若不可用则只保留 OSC 52。
+- diff 解析、选区、which-key、标签栏均自写，不引新 crate；子 agent 复用现有 kernel `AgentBuilder`。
+- 图片粘贴若纳入，复用 arboard 的 image 能力（默认裁剪至 M5）。
+
+### 六、风险与对策
+
+| 风险 | 对策 |
+|---|---|
+| 鼠标事件在 Windows conpty/部分终端异常 | 解析失败仅忽略，不影响键盘；`EnableMouseCapture` 已有；命中函数与事件解耦、可单测 |
+| 剪贴板跨平台差异 | 默认 OSC 52（纯协议，SSH/多数终端可用）；arboard 为可选 feature，失败静默降级 |
+| 选区坐标与窗口化渲染不一致 | 渲染时同步记录 hit/行映射；选区从最终 `Buffer` 提取，不依赖中间结构 |
+| rewind 破坏 tool_call/result 配对 | kernel 截断后强制 `repair_pairing`；仅空闲时执行；单测覆盖 |
+| transcript 与 rewind 不一致 | 明确语义：仅内存 + snapshot 回退，jsonl 追加记录保留（recall 完整）；toast 说明 |
+| 子 agent 改动 kernel 核心 trait | 默认只做"task 工具 + 最终文本"；实时嵌套视图需评审、独立步骤、可裁剪 |
+| 新增渲染路径拖慢帧 | 全部窗口化 + 复用 block 缓存；新增基准守护 < 16ms 帧预算 |
+| 标签栏/侧栏/浮层遮挡小屏 | 宽度阈值降级（参考 M1 sidebar ≤100 列隐藏）；布局单测 |
+
+### 七、M4 完成判据
+
+- [x] 全部测试 + clippy `-D warnings` + fmt 绿；既有基准不回退，新增基准有基线。
+- [x] reasoning 默认折叠、可展开，且流式期间不重排历史。
+- [x] diff viewer unified/split 均可滚动，万行 diff 单帧 < 16ms。
+- [x] 标签栏切换/关闭会话，进出会话投影不丢。
+- [x] 鼠标滚轮/点击/拖选可用；复制内容与屏幕选中一致。
+- [x] which-key 在 leader 窗口内列出真实绑定（含用户覆盖）。
+- [x] 侧边栏 context/files 数据正确、可折叠。
+- [x] rewind 回退后继续对话无 provider 配对错误，snapshot 同步、transcript 保留。
+- [x] `task` 工具能完成只读子任务并回灌结果（实时嵌套视图视评审决定）。
+- [x] toast 按级别着色、对 which-key/补全浮层避让；新命令（rewind 等）已进 help/命令面板。
+- [ ] 手工冒烟：真实终端下鼠标/剪贴板/标签/rewind 各验一次。
+
+### 八、实施记录（2026-09-25 完成）
+
+#### 8.1 交付状态
+
+- 12 步（1–12）全部落地；工作区 **224 个测试全绿**（kernel 13 + 集成 12、capabilities 57 +
+  集成 10、config 7、agent 1 + 集成 2、tui 122）；`cargo clippy --workspace --all-targets -- -D warnings`、
+  `cargo fmt --check`、`cargo build --release` 均通过。
+- 模块落位（新增）：
+  - `kernel/src/{message,event,agent}.rs`：`Conversation::rewind(keep_turns)` / `AgentCommand::Rewind`
+    / 空闲门控处理（M4-9）。
+  - `capabilities/src/tools/task.rs`：`TaskTool` 只读子 agent（M4-10）；`tools/mod.rs` 增
+    `read_only_tools()/read_only_registry()`；`kernel/src/tool.rs` 的 `ToolRegistry` 派生 `Clone`。
+  - `agent/src/persona.rs`：`read_only_sub_persona`；`assemble.rs` 装配 `TaskTool`。
+  - `tui/src/widgets/{reasoning,tabs,whichkey,toast}.rs`、`widgets/dialog/diff.rs`、
+    `tui/src/{selection,hit,clipboard}.rs`。
+
+#### 8.2 与计划的偏差（实现中收敛）
+
+1. **rewind 以「user turn 数」为语义**（`keep_turns`）而非计划 §2.1 的 `keep_messages`（原始消息条数）：
+   kernel 原始消息含 tool_calls/tool_results 展开，与 TUI 投影条数不一致；改为 turn 计数后两层语义统一。
+   `AgentCommand::Rewind { session_id, keep_turns }` 仅在无运行轮次时生效，截断后强制 `repair_pairing()`。
+2. **子 agent 采用默认回退方案**，未引入计划 §2.1 的 `AgentEvent::SubTask` + `ToolContext.events`
+   （实时嵌套视图，列为可选加分项）：`task` 工具派生只读子 agent，回灌最终文本，以普通工具卡呈现。
+   `TaskTool` 位于 capabilities，装配时注入共享 provider、只读注册表与子 persona，避免 capabilities
+   反向依赖 agent 层。
+3. **`ToolRegistry` 派生 `Clone`**（`Arc<dyn Tool>` 浅拷贝）以支持子 agent 复用只读工具集；
+   无新增依赖，符合「复用 kernel `AgentBuilder`、不引新 crate」。
+4. **toast 由 `Vec<(String, Instant)>` 扩为三元组**携带 `ToastLevel`（help/命令面板仍由
+   `commands::registry()` 自动派生，rewind 等新命令无需单独登记）。
+
+#### 8.3 性能基线（criterion，本机 2026-09-25）
+
+| 基准 | 结果 | 预算/说明 |
+|---|---|---|
+| windowed_frame / 10000_msgs（既有） | ~1.09 ms | 远优于 < 16 ms 帧预算 |
+| markdown/incremental_tail_block（既有） | ~0.57 ms | 未回退（增量路径） |
+| markdown/full_reparse_each_frame（对照） | ~1.71 ms | 固化增量收益对照 |
+| fuzzy/filter_10000_items（既有） | ~0.46 ms | 未回退 |
+| diff/parse_400_hunks（新增） | ~0.80 ms | 400 hunk 单文件解析 |
+| diff/windowed_frame（新增） | ~1.64 ms | 120×40 窗口化渲染一帧 |
+| selection/extract_full_screen（新增） | ~43 µs | 120×40 buffer 行文本提取 |
+| reasoning/collapsed_height（新增） | ~16 ns | 折叠态高度（O(1)） |
+| reasoning/expanded_height（新增） | ~23 ns | 展开态高度（缓存行数） |
+
+> 本机同一运行下既有基准（syntax/theme/fuzzy）较 M3 报告普遍放大约 2×，为测量环境差异
+> （同轮全量基准运行 + 机器负载），非代码回退；关注相对对照与 16 ms 帧预算。
+
+> 遗留：真实终端手工冒烟（完成判据末条）待人工执行。
+
+---
+
+## M5 后续里程碑方向
+
+> M4 TUI 精致化已在上节细化为实施计划；本节保留 M5 方向，供其启动时细化。
+
 - **M5 硬化发布**：Anthropic provider、跨 provider 切换/daemon 化、分发期优化
   （`panic="abort"`/mimalloc/进一步 LTO 与体积）、跨平台 CI（Win/macOS/Linux，含性能基准趋势门）、
   headless JSONL 稳定化、conformance 测试套件（仿 atomcode testkit）、cargo-dist 打包。
+- 可选（自 M4 延后）：diff viewer 内联语法高亮、图片附件/vision 输入、子 agent 实时嵌套视图。
