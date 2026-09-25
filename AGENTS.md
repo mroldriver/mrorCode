@@ -42,7 +42,8 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   `raw-dylib` links fail (`dlltool` needs a sibling `as.exe`). Re-run it on a fresh clone.
 - **MSRV 1.88** (`rust-toolchain.toml`, workspace `rust-version`): don't use newer std APIs
   (e.g. `str::floor_char_boundary`) — clippy is the gate that catches this.
-- **TLS is native-tls on purpose**: this box has no C compiler, so ring/rustls would break the build.
+- **TLS is native-tls on purpose**: this box has no C compiler, so ring/rustls (and mimalloc) would break the build.
+- **Release profile**: `panic = "abort"` enabled (M5-c, 7.9→7.0 MB); mimalloc rejected (no gcc, same constraint as ring/rustls).
 - **Themes**: `crates/mrorcode-tui/src/themes/*.json` are embedded by `build.rs` at compile time —
   adding one needs only a rebuild (vendored from opencode, MIT: `crates/mrorcode-tui/licenses/`).
 - **Testkit**: `mrorcode-kernel`'s `test-support` feature exposes `ScriptedProvider`/`EchoTool`
@@ -52,7 +53,7 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.
 - Comments and design docs are Chinese — preserve existing Chinese comments and match that tone.
 - Docs: product design is `docs/project-plan-atomcode.md`; `docs/roadmap.md` holds the archived
-  M1–M3 plans plus the completed M4 plan (M5 is direction-only); index is `docs/README.md`.
+  M1–M4 plans plus the completed M4 plan (M5 is direction-only); index is `docs/README.md`.
   Never rewrite archived milestone history — append new milestones as new sections.
 
 ## Versioning

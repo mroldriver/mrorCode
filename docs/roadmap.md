@@ -1326,6 +1326,9 @@ server（filesystem）冒烟。
 - [ ] M5-a：三平台 + MSRV CI 全绿，Windows 全自动化。（gitcode CI 为 Web UI 配置，待人工在面板创建）
 - [x] M5-b：`type = "anthropic"` 可用，工具往返不破坏配对，wiremock 单测覆盖。（2026-09-25 完成，241 测试全绿）
 - [ ] M5-c：三平台单二进制产物，体积基线记录（优化项按数据决定开否）。
+  - 已完成：`panic = "abort"` 写入 release profile（体积 7.9→7.0 MB，windows-gnu 兼容）；
+    mimalloc 评估后否决（本机无完整 gcc，与 ring/rustls 同约束）。
+  - 待 M5-a CI 就绪后：cargo-dist 三平台产物上传。
 - [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
 - [ ] M5-e：跨 provider 切换有落地方案（轻量或 daemon，按设计文档结论）。
 
