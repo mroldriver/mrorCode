@@ -9,7 +9,7 @@
 > - **M2：TUI 核心体验**（2026-09-24）
 > - **M3：Agent 能力增强**（2026-09-24）
 > - **M4：TUI 精致化**（2026-09-25，手工冒烟待人工）
-> - **M5 后续方向**（见文末）
+> - **M5：硬化发布**（已细化为 a–e 实施计划，见文末；尚未开工）
 
 
 ---
@@ -1201,11 +1201,134 @@ server（filesystem）冒烟。
 
 ---
 
-## M5 后续里程碑方向
+## mrorCode M5 实施计划：硬化发布
 
-> M4 TUI 精致化已在上节细化为实施计划；本节保留 M5 方向，供其启动时细化。
+> 前置：M1–M4 已完成（见上文各自完成报告）。M5 从「本机可跑」走向「跨平台可发布、可回归、
+> 可安装」。整体拆为 a→e 五个相对独立的子里程碑，**顺序执行**（CI 先落地，后续每步都有回归保护）。
+> 每个子步保持 `cargo test/clippy/fmt --workspace` 绿；代码改动按项目规则 bump 版本。
+>
+> **CI 托管：gitcode.com**（非 GitHub）。其流水线配置格式未事先核实，M5-a 落地时先按 gitcode
+> 实际文档确认文件名/语法，再写流水线定义；本节先固定「检查矩阵 / 触发条件 / 产物」语义。
 
-- **M5 硬化发布**：Anthropic provider、跨 provider 切换/daemon 化、分发期优化
-  （`panic="abort"`/mimalloc/进一步 LTO 与体积）、跨平台 CI（Win/macOS/Linux，含性能基准趋势门）、
-  headless JSONL 稳定化、conformance 测试套件（仿 atomcode testkit）、cargo-dist 打包。
-- 可选（自 M4 延后）：diff viewer 内联语法高亮、图片附件/vision 输入、子 agent 实时嵌套视图。
+### 总目标（验收标准）
+
+1. 任意 PR / push 在 Win / macOS / Linux 三平台 + MSRV(1.88) 上自动跑 fmt/clippy/test，全绿方可合并。
+2. 支持 Anthropic Messages API（除 OpenAI 兼容外的第二 provider），工具调用往返不破坏配对。
+3. 每个平台产出可直接运行的单二进制产物（含体积基线）。
+4. `headless --json` 事件 schema 有契约测试守护；testkit 可对抗校验事件序列。
+5. 跨 provider 切换有明确方案（重建 runtime 或 daemon，先设计后动工）。
+
+### 非目标（仍归后续 / 不做）
+
+- 子 agent 实时嵌套视图（`AgentEvent::SubTask`，改 kernel 核心 trait）——评估后可作 M5 加分项，
+  但有专门评审，不默认纳入。
+- diff viewer 内联语法高亮、图片/vision 输入、插件系统、国际化。
+
+---
+
+### M5-a 跨平台 CI（gitcode）
+
+**目标**：三平台 + MSRV 自动门禁；Windows 不依赖手工装 VS。
+
+- **矩阵**：`windows-latest / macos-latest / ubuntu-latest` × 稳定工具链；另起 1 个 job 钉
+  MSRV（`rust-version = "1.88"`）仅在 ubuntu 上跑（快）。
+- **每 job 步骤**：
+  1. 检出仓库；
+  2. 装 Rust（`rust-toolchain.toml` 已钉 `stable-x86_64-pc-windows-gnu`，CI 直接读它）；
+  3. **Windows 额外**：跑 `pwsh -File scripts/bootstrap-tools.ps1`（解包 binutils 到 `.tools/mingw`，
+     生成 `.cargo/config.toml` 的 dlltool 指向）；
+  4. `cargo fmt --check`；
+  5. `cargo clippy --workspace --all-targets -- -D warnings`；
+  6. `cargo test --workspace`。
+- **基准趋势门（独立 release job）**：`cargo bench -p mrorcode-tui --bench render`，产出 criterion
+  JSON。首次运行只**存基线**（`target/criterion` 归档），不设硬阈值；后续 PR 与基线对比，关键指标
+  回退 > 10% 时报错并要求说明（沿用 M1 §六约定）。
+- **验收**：push / PR 三平台全绿；Windows job 全自动化（无 `link.exe` 手工安装）。
+- **风险**：gitcode 流水线语法未知 → 先查文档再写；macOS/Linux 无 native-tls 的 C 依赖问题
+  （SChannel/Security.framework 在对应平台是系统库，CI 需带系统 OpenSSL？——实为 native-tls，
+  mac/linux 走 Security.framework / Schannel，无需 OpenSSL；若报缺库再补 `brew install` 之类）。
+
+---
+
+### M5-b Anthropic provider
+
+**目标**：OpenAI 兼容之外的第二 provider；复用手写 SSE 解码器；工具调用往返正确。
+
+- **config（leaf）**：
+  - `resolve()` 放行 `type = "anthropic"`（现 lib.rs:240 硬拒绝非 openai_compat，且有测试
+    `unknown_provider_type_rejected` 钉死 anthropic 必被拒——改：白名单 `openai_compat | anthropic`，
+    并把该测试改为「未知类型仍拒、anthropic 通过」）。
+  - `ProviderConfig` 复用现有 `base_url`（anthropic 默认 `https://api.anthropic.com`）/`api_key`/
+    `model`/`context_window`；新增环境变量 `MRORCODE_ANTHROPIC_API_KEY`（装配时按 type 选用）。
+  - `ConfigError::UnknownProviderType` 文案更新支持列表。
+- **capabilities/provider/anthropic.rs（新）**：
+  - 请求 `POST {base}/v1/messages`，头 `x-api-key` / `anthropic-version: 2023-06-01`；
+    `system` 独立顶层字段（非 messages 内一条）；消息按 `user/assistant` 分组，工具调用映射为
+    `tool_use` 块、工具结果映射为 `tool_result` 块。
+  - 复用 `sse.rs` 的 `SseDecoder::feed`；事件类型 `message_start/content_block_delta/...` →
+    kernel `StreamEvent`；`content_block_stop` 的 `tool_use` 参数累积后产出 `ToolCallStarted/Delta`。
+  - 把 kernel `Message/ToolCall/ToolResult` ⇄ Anthropic 块做纯函数映射（可单测），落库前仍过
+    `repair_pairing`（防配对破坏）。
+- **assemble.rs**：按 `resolved.provider_type` 选 `OpenAiCompatProvider` 或新 `AnthropicProvider`，
+  二者都装成 `Arc<dyn LlmProvider>`。
+- **验收**：wiremock mock Anthropic SSE（首段文本、tool_use、tool_result 回灌、收尾）全链路单测；
+  不依赖真实 key；同一份 ScriptedProvider 集成测试在两种 provider 下语义一致。
+- **风险**：Anthropic 工具参数是流式 JSON 片段（delta 是字符串拼接的 JSON），需在解码器层做
+  分片拼接后再 parse（仿 openai_compat 的做法）；消息映射表易错 → 映射纯函数 + 录制字节单测先行。
+
+---
+
+### M5-c 打包分发
+
+**目标**：每平台产出可直接运行的单二进制；体积 / 分发期优化有基线再定。
+
+- 引入 **cargo-dist**（或 gitcode CI 的产物上传步骤），在 M5-a 的三平台 job 末尾构建并上传
+  `mrorcode[-<triple>].{exe,targz}`；打 tag 时出 GitHub/gitcode Release。
+- 记录 release 二进制体积基线（当前 M1 记录 windows-gnu release ~4.9MB）。
+- **分发期优化（先量化再决定，不默认开）**：评估 `panic = "abort"` 与 `mimalloc`——只在有
+  benchmark 显示启动/吞吐收益时才开；先在独立 job 验证 windows-gnu 链接兼容性（mimalloc 的 C
+  运行时交互、abort 与 unwind 终端恢复兜底的冲突），有风险就保持现状。
+- **验收**：三平台产物可直接执行 `mrorcode --version`；体积对比 M1 基线不异常膨胀。
+- **风险**：mimalloc 在 windows-gnu 可能引入新链接问题 → 单独 job 验证，失败则回退（不阻塞 M5-c）。
+
+---
+
+### M5-d headless JSONL 稳定化 + conformance testkit
+
+**目标**：`--json` 事件契约冻结；可用 testkit 对抗校验任意 provider 的事件序列。
+
+- 冻结 `cli/headless.rs` 输出的 JSONL 事件 schema（`run.started/message.delta/tool.started/
+  tool.completed/turn.completed/run.finished`），加 schema 快照测试（insta）防漂移。
+- 扩展 kernel `test-support`：在现有 `ScriptedProvider` 上加「期望事件序列」断言器，形成可复用
+  conformance 套件；OpenAI 兼容与 Anthropic（M5-b）两种实现跑同一套断言。
+- **验收**：改事件字段会让快照测试失败；conformance 套件对两个 provider 均绿。
+- **风险**：快照测试对有意的演进过于严格 → 演进时显式更新快照并在提交说明记录。
+
+---
+
+### M5-e 跨 provider 切换 / daemon（架构改动最大，最后做）
+
+**目标**：在运行中切换 provider（不同 base_url/api_key），而非「改配置重启」。
+
+- **先出设计再动工**：现状切换 provider 需重建 runtime（M2 §8.5 已注明）。两条候选：
+  1. **轻量方案**：TUI 侧切换 provider 时优雅关闭当前 runtime、以新 provider 重新 `assemble`
+     并 resume 当前会话（不引入 daemon，复杂度低）；
+  2. **daemon 方案**：常驻进程持有 provider 连接池，TUI/headless 作为客户端（接近 atomcode/ACP，
+     复杂度高）。
+- 默认倾向轻量方案（1）；daemon（2）仅在有明确多客户端需求时再做。
+- **验收**：切换 provider 后当前会话能继续对话、上下文不丢；不满足则降级为「需重启」的明示提示。
+- **风险**：重建 runtime 时会话状态迁移 → 复用 M3 的 snapshot/resume 路径，不另造状态机。
+
+---
+
+### M5 验收清单（总）
+
+- [ ] M5-a：三平台 + MSRV CI 全绿，Windows 全自动化。
+- [ ] M5-b：`type = "anthropic"` 可用，工具往返不破坏配对，wiremock 单测覆盖。
+- [ ] M5-c：三平台单二进制产物，体积基线记录（优化项按数据决定开否）。
+- [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
+- [ ] M5-e：跨 provider 切换有落地方案（轻量或 daemon，按设计文档结论）。
+
+### 自 M4 延后的可选项（评估，不默认纳入 M5）
+
+- diff viewer 内联语法高亮、图片/vision 输入、子 agent 实时嵌套视图（`AgentEvent::SubTask`）。

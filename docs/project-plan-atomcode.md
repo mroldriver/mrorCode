@@ -145,7 +145,7 @@ cli ─┬─> tui ─> agent ─> capabilities ─> kernel
 | **M2 TUI 核心体验** | 主题/高亮/折叠卡/对话框/命令面板/键位/多会话 | ✅ 2026-09-24 |
 | **M3 Agent 能力** | 编辑/搜索工具、持久化+resume、压缩、MCP、输入层、plan、路径 gate | ✅ 2026-09-24 |
 | **M4 TUI 精致化** | 多会话标签、diff viewer、reasoning 折叠、子 agent、rewind、鼠标/剪贴板 | ✅ 2026-09-25 |
-| **M5 硬化发布** | Anthropic provider、daemon、跨平台 CI、conformance、打包分发 | ⏳ 待启动 |
+| **M5 硬化发布** | 跨平台 CI、Anthropic provider、打包分发、JSONL 契约/testkit、跨 provider 切换 | 📋 计划已细化（a→e），待开工 |
 
 各里程碑的步骤、验收标准与完成报告见 [roadmap.md](roadmap.md)。
 

@@ -6,7 +6,7 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | [project-plan-atomcode.md](project-plan-atomcode.md) | 产品总体设计：定位、TUI 技术选型、6-crate 架构、功能对标清单、技术栈 | 现行（随实现维护） |
-| [roadmap.md](roadmap.md) | M1–M4 实施计划与完成报告（M1–M4 存档），M5 方向 | 混合（历史存档 + 已完结计划） |
+| [roadmap.md](roadmap.md) | M1–M4 实施计划与完成报告（M1–M4 存档），M5 硬化发布实施计划（a→e，待开工） | 混合（历史存档 + 进行中计划） |
 
 ## 维护约定
 
