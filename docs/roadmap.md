@@ -1323,8 +1323,8 @@ server（filesystem）冒烟。
 
 ### M5 验收清单（总）
 
-- [ ] M5-a：三平台 + MSRV CI 全绿，Windows 全自动化。
-- [ ] M5-b：`type = "anthropic"` 可用，工具往返不破坏配对，wiremock 单测覆盖。
+- [ ] M5-a：三平台 + MSRV CI 全绿，Windows 全自动化。（gitcode CI 为 Web UI 配置，待人工在面板创建）
+- [x] M5-b：`type = "anthropic"` 可用，工具往返不破坏配对，wiremock 单测覆盖。（2026-09-25 完成，241 测试全绿）
 - [ ] M5-c：三平台单二进制产物，体积基线记录（优化项按数据决定开否）。
 - [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
 - [ ] M5-e：跨 provider 切换有落地方案（轻量或 daemon，按设计文档结论）。
