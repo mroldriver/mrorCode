@@ -4,18 +4,19 @@ members = ["crates/*"]
 default-members = ["crates/mrorcode-cli"]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 license = "MIT"
 description = "A fast terminal AI coding agent"
 rust-version = "1.88"
 
-# 速度优先：从第一天起就使用优化的 release profile（体积优化如 panic=abort/mimalloc 留待 M5 评估）
+# 速度优先：release profile（M5-c 评估后启用 panic=abort：体积 -9%，windows-gnu 兼容）
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+panic = "abort"
 
 # 供采样/剖析使用：release 性能 + 最小调试信息（仅行号表）
 [profile.bench]
