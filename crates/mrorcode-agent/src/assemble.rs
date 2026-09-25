@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use mrorcode_capabilities::approval::ApprovalMiddleware;
 use mrorcode_capabilities::mcp::{bootstrap, McpBootstrap};
-use mrorcode_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider};
+use mrorcode_capabilities::provider::{
+    AnthropicConfig, AnthropicProvider, OpenAiCompatConfig, OpenAiCompatProvider,
+};
 use mrorcode_capabilities::tools::{builtin_registry, read_only_registry, TaskTool};
 use mrorcode_config::{McpServer, ResolvedProvider};
 use mrorcode_kernel::{LlmProvider, ToolMiddleware};
@@ -84,13 +86,23 @@ fn assemble_inner(
     initial_model: Option<String>,
     mcp: Option<McpBootstrap>,
 ) -> anyhow::Result<Assembly> {
-    let provider: Arc<dyn LlmProvider> = Arc::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
-        base_url: resolved.base_url.clone(),
-        api_key: resolved.api_key.clone(),
-        model: resolved.model.clone(),
-        context_window: resolved.context_window,
-        timeout: Duration::from_secs(300),
-    })?);
+    let provider: Arc<dyn LlmProvider> = match resolved.provider_type.as_str() {
+        "anthropic" => Arc::new(AnthropicProvider::new(AnthropicConfig {
+            base_url: resolved.base_url.clone(),
+            api_key: resolved.api_key.clone(),
+            model: resolved.model.clone(),
+            context_window: resolved.context_window,
+            timeout: Duration::from_secs(300),
+            max_tokens: 4096,
+        })?),
+        _ => Arc::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
+            base_url: resolved.base_url.clone(),
+            api_key: resolved.api_key.clone(),
+            model: resolved.model.clone(),
+            context_window: resolved.context_window,
+            timeout: Duration::from_secs(300),
+        })?),
+    };
 
     let mut registry = builtin_registry();
     if let Some(boot) = &mcp {
