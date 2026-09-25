@@ -97,6 +97,58 @@ fn fuzzy_filter(c: &mut Criterion) {
     });
 }
 
+// ---------- M4-12 新增基准 ----------
+
+fn diff_parse(c: &mut Criterion) {
+    let text = bench_support::synth_diff();
+    c.bench_function("diff/parse_400_hunks", |b| {
+        b.iter(|| {
+            black_box(bench_support::diff_parse_count(black_box(text)));
+        })
+    });
+}
+
+fn diff_windowed_frame(c: &mut Criterion) {
+    let doc = bench_support::syn_diff_doc();
+    c.bench_function("diff/windowed_frame", |b| {
+        b.iter(|| {
+            bench_support::render_diff_frame(black_box(&doc));
+        })
+    });
+}
+
+fn selection_extract(c: &mut Criterion) {
+    let buf = bench_support::selection_buffer();
+    c.bench_function("selection/extract_full_screen", |b| {
+        b.iter(|| {
+            black_box(bench_support::selection_extract_count(black_box(&buf)));
+        })
+    });
+}
+
+fn reasoning_fold(c: &mut Criterion) {
+    c.bench_function("reasoning/collapsed_height", |b| {
+        let mut m = bench_support::reasoning_view(200);
+        b.iter(|| {
+            black_box(bench_support::reasoning_height(
+                black_box(&mut m),
+                118,
+                false,
+            ));
+        })
+    });
+    c.bench_function("reasoning/expanded_height", |b| {
+        let mut m = bench_support::reasoning_view(200);
+        b.iter(|| {
+            black_box(bench_support::reasoning_height(
+                black_box(&mut m),
+                118,
+                true,
+            ));
+        })
+    });
+}
+
 criterion_group!(
     benches,
     markdown_incremental,
@@ -104,6 +156,10 @@ criterion_group!(
     width_cache,
     theme_parse_all,
     syntax_highlight,
-    fuzzy_filter
+    fuzzy_filter,
+    diff_parse,
+    diff_windowed_frame,
+    selection_extract,
+    reasoning_fold
 );
 criterion_main!(benches);

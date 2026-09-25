@@ -28,7 +28,7 @@ pub fn long_history_state(n: usize) -> AppState {
             .map(|j| format!("message {i} line {j} with some markdown *emphasis* text"))
             .collect::<Vec<_>>()
             .join("\n\n");
-        let mut msg = MessageView::assistant();
+        let mut msg = MessageView::assistant(i as u64 + 1);
         msg.role = Role::Assistant;
         msg.doc.update(&text);
         msg.text = text;
@@ -109,4 +109,81 @@ where
     S: AsRef<str>,
 {
     crate::fuzzy::filter(query, items).len()
+}
+
+// ---------- M4-12 新增基准 ----------
+
+/// 一段合成 unified diff（多文件、多 hunk、上下文/增删行混合）。
+pub fn synth_diff() -> &'static str {
+    let mut out =
+        String::from("diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n");
+    for i in 0..400 {
+        out.push_str(&format!("@@ -{i},10 +{i},11 @@ fn fn_{i}()\n"));
+        for _j in 0..10 {
+            out.push_str(" context line of ordinary text with `code` and *emph*\n");
+        }
+        out.push_str("+added line\n-removed line\n");
+    }
+    Box::leak(out.into_boxed_str())
+}
+
+/// diff 解析耗时（DiffDoc 构造）。
+pub fn diff_parse_count(text: &str) -> usize {
+    crate::widgets::diff::parse(text).files.len()
+}
+
+/// 窗口化 diff 帧渲染（120x40 TestBackend，50 个文件的拆窗视图）。
+pub fn render_diff_frame(doc: &crate::widgets::diff::DiffDoc) {
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let state = crate::widgets::dialog::DiffState::new("bench", doc.clone());
+    term.draw(|f| {
+        crate::widgets::dialog::diff::render(
+            &state,
+            f.area(),
+            f.buffer_mut(),
+            &Theme::tokyonight(),
+        );
+    })
+    .unwrap();
+}
+
+/// 构造一个大 diff 的解析结果供渲染基准使用。
+pub fn syn_diff_doc() -> crate::widgets::diff::DiffDoc {
+    crate::widgets::diff::parse(synth_diff())
+}
+
+/// 选区提取基准：从 120x40 全屏 buffer 提取行文本（M4-6 选中屏守恒）。
+pub fn selection_extract_count(buf: &ratatui::buffer::Buffer) -> usize {
+    crate::selection::rows_from_buffer(buf).len()
+}
+
+/// 构造一个全屏 TestBackend buffer 供选区提取基准。
+pub fn selection_buffer() -> ratatui::buffer::Buffer {
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|f| {
+        let area = f.area();
+        let theme = Theme::tokyonight();
+        session::render(&mut long_history_state(50), area, f.buffer_mut(), &theme);
+    })
+    .unwrap();
+    term.backend().buffer().clone()
+}
+
+/// reasoning 折叠/展开高度计算（M4-1）：对含 reasoning 的 MessageView 求 height。
+pub fn reasoning_height(m: &mut MessageView, width: u16, expanded: bool) -> u16 {
+    crate::widgets::reasoning::height(m, width, expanded, 0, &Theme::tokyonight())
+}
+
+/// 构造带较长 reasoning 文本的 MessageView。
+pub fn reasoning_view(n_lines: usize) -> MessageView {
+    let mut text: String = "思考：".into();
+    for i in 0..n_lines {
+        text.push_str(&format!(
+            "步骤 {i}：某种分析与推理过程，包含一些长文本以便折行。\n"
+        ));
+    }
+    let mut m = MessageView::assistant(7);
+    m.reasoning = text;
+    m.reasoning_doc.update(&m.reasoning);
+    m
 }

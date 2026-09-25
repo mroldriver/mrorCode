@@ -23,6 +23,12 @@ pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
 unicode-width = { workspace = true }
 tracing = { workspace = true }
+# 可选：系统剪贴板（默认关闭，走 OSC 52）。M4-6 起可用。
+arboard = { version = "3", optional = true }
+
+[features]
+# 启用系统剪贴板；失败时仍降级到 OSC 52。
+clipboard = ["dep:arboard"]
 
 [dev-dependencies]
 criterion = { workspace = true }
