@@ -7,11 +7,11 @@ use std::time::Duration;
 use mrorcode_capabilities::approval::ApprovalMiddleware;
 use mrorcode_capabilities::mcp::{bootstrap, McpBootstrap};
 use mrorcode_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider};
-use mrorcode_capabilities::tools::builtin_registry;
+use mrorcode_capabilities::tools::{builtin_registry, read_only_registry, TaskTool};
 use mrorcode_config::{McpServer, ResolvedProvider};
-use mrorcode_kernel::ToolMiddleware;
+use mrorcode_kernel::{LlmProvider, ToolMiddleware};
 
-use crate::persona::coding_persona;
+use crate::persona::{coding_persona, read_only_sub_persona};
 use crate::runtime::{start, RuntimeEvent, RuntimeHandle, RuntimeStart};
 
 pub struct Assembly {
@@ -84,18 +84,25 @@ fn assemble_inner(
     initial_model: Option<String>,
     mcp: Option<McpBootstrap>,
 ) -> anyhow::Result<Assembly> {
-    let provider = OpenAiCompatProvider::new(OpenAiCompatConfig {
+    let provider: Arc<dyn LlmProvider> = Arc::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
         base_url: resolved.base_url.clone(),
         api_key: resolved.api_key.clone(),
         model: resolved.model.clone(),
         context_window: resolved.context_window,
         timeout: Duration::from_secs(300),
-    })?;
+    })?);
 
     let mut registry = builtin_registry();
     if let Some(boot) = &mcp {
         boot.register_into(&mut registry);
     }
+    // M4-10：task 只读子 agent 工具，与主 agent 共享 provider。
+    registry.insert(Arc::new(TaskTool::new(
+        Arc::clone(&provider),
+        read_only_registry(),
+        read_only_sub_persona(&working_dir),
+        Some(resolved.model.clone()),
+    )));
 
     let mut middleware: Vec<Arc<dyn ToolMiddleware>> = Vec::new();
     if !options.skip_permissions {
@@ -114,7 +121,7 @@ fn assemble_inner(
     };
 
     let (handle, events) = start(RuntimeStart {
-        provider: Arc::new(provider),
+        provider,
         tools: registry,
         middleware,
         working_dir,

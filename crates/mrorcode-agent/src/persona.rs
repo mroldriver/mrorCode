@@ -26,6 +26,26 @@ Working discipline:
     )
 }
 
+/// 子 agent（task 工具）的只读 persona。
+pub fn read_only_sub_persona(working_dir: &Path) -> String {
+    let date = today_iso8601();
+    let wd = working_dir.display();
+    format!(
+        r#"You are a read-only research sub-agent working inside the user's terminal.
+
+Environment:
+- Current date: {date}
+- Working directory: {wd}
+- Available tools: read_file, glob, grep.
+
+Rules:
+- You may ONLY use read-only tools (read_file/glob/grep). You cannot edit files or run commands.
+- Investigate thoroughly, then produce a concise, self-contained answer covering what you found,
+  with concrete file paths and line references. The answer is returned verbatim to the caller.
+- Answer in the same language as the task description."#
+    )
+}
+
 /// 不依赖 chrono 的公历日期（Howard Hinnant civil-from-days 算法）。
 fn today_iso8601() -> String {
     let secs = SystemTime::now()

@@ -30,6 +30,11 @@ pub enum DriverCommand {
     /// 切换 plan 模式（只读 gate）。
     SetPlanMode(bool),
     Respond(u64, Value),
+    /// 回退会话到保留最早 `keep_turns` 个 user turn（M4-9）。
+    Rewind {
+        session_id: u64,
+        keep_turns: usize,
+    },
     Cancel,
     Shutdown,
 }
@@ -80,6 +85,14 @@ impl RuntimeHandle {
 
     pub fn cancel(&self) {
         let _ = self.commands.send(DriverCommand::Cancel);
+    }
+
+    /// 回退会话到保留最早 `keep_turns` 个 user turn；kernel 空闲时生效（M4-9）。
+    pub fn rewind(&self, session_id: u64, keep_turns: usize) {
+        let _ = self.commands.send(DriverCommand::Rewind {
+            session_id,
+            keep_turns,
+        });
     }
 
     pub fn shutdown(&self) {
@@ -167,6 +180,15 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
                         }
                         Some(DriverCommand::Cancel) => {
                             let _ = agent_handle.commands.send(AgentCommand::Cancel);
+                        }
+                        Some(DriverCommand::Rewind {
+                            session_id,
+                            keep_turns,
+                        }) => {
+                            let _ = agent_handle.commands.send(AgentCommand::Rewind {
+                                session_id,
+                                keep_turns,
+                            });
                         }
                     }
                 }
