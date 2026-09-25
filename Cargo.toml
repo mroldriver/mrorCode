@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/mrorcode-cli"]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "MIT"
 description = "A fast terminal AI coding agent"

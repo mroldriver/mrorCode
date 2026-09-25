@@ -37,3 +37,13 @@ context_window = 128000
 #
 # 启动时拉起子进程并把其工具注册为 mcp__<server>__<tool>；
 # 断连 fail-closed。未声明即不启用。
+
+# Anthropic provider（可选）：
+# [providers.claude]
+# type = "anthropic"
+# base_url = "https://api.anthropic.com"
+# api_key = "sk-ant-xxx"
+# model = "claude-sonnet-4-5"
+# context_window = 200000
+#
+# 使用：mrorcode --provider claude run "hello"
