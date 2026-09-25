@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# 钉死 windows-gnu 三元组：裸 "stable" 在 Windows 安装器下解析为 msvc host，
+# 而本机/CI 按 AGENTS.md 约定走 gnu（.cargo/config.toml 的 dlltool 配置即针对 gnu target）。
+channel = "stable-x86_64-pc-windows-gnu"
 components = ["rustfmt", "clippy"]
