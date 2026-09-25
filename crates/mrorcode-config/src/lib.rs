@@ -59,7 +59,7 @@ pub struct McpServer {
     pub env: HashMap<String, String>,
 }
 
-/// 单个 provider 配置。M1 仅 `openai_compat` 一种类型。
+/// 单个 provider 配置。M1 仅 `openai_compat`；M5-b 起支持 `anthropic`。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -108,7 +108,7 @@ pub enum ConfigError {
     NoProvider { path: String },
     #[error("provider '{name}' is missing required field: {field}")]
     MissingField { name: String, field: &'static str },
-    #[error("unknown provider type '{0}' (supported: openai_compat)")]
+    #[error("unknown provider type '{0}' (supported: openai_compat, anthropic)")]
     UnknownProviderType(String),
 }
 
@@ -171,16 +171,18 @@ impl Config {
 
     /// 应用环境变量覆盖（注入式接口，便于测试）：
     /// `MRORCODE_BASE_URL` / `MRORCODE_API_KEY` / `MRORCODE_MODEL` /
-    /// `MRORCODE_PROVIDER`（条目名）。
+    /// `MRORCODE_PROVIDER`（条目名）/ `MRORCODE_ANTHROPIC_API_KEY`。
     pub fn apply_environment(&mut self, vars: impl Iterator<Item = (String, String)>) {
         let mut base_url = None;
         let mut api_key = None;
+        let mut anthropic_key = None;
         let mut model = None;
         let mut provider_name = None;
         for (k, v) in vars {
             match k.as_str() {
                 "MRORCODE_BASE_URL" => base_url = Some(v),
                 "MRORCODE_API_KEY" => api_key = Some(v),
+                "MRORCODE_ANTHROPIC_API_KEY" => anthropic_key = Some(v),
                 "MRORCODE_MODEL" => model = Some(v),
                 "MRORCODE_PROVIDER" => provider_name = Some(v),
                 _ => {}
@@ -192,7 +194,7 @@ impl Config {
         if provider_name.is_some() {
             self.default_provider = provider_name;
         }
-        if base_url.is_none() && api_key.is_none() {
+        if base_url.is_none() && api_key.is_none() && anthropic_key.is_none() {
             return;
         }
         let name = self
@@ -201,6 +203,10 @@ impl Config {
             .or_else(|| self.providers.keys().next().cloned())
             .unwrap_or_else(|| "default".to_string());
         let entry = self.providers.entry(name.clone()).or_default();
+        // anthropic key 优先写入；若无 type 且有 anthropic key 则标记为 anthropic
+        if anthropic_key.is_some() && entry.provider_type.is_none() {
+            entry.provider_type = Some("anthropic".to_string());
+        }
         if entry.provider_type.is_none() {
             entry.provider_type = Some("openai_compat".to_string());
         }
@@ -208,6 +214,9 @@ impl Config {
             entry.base_url = Some(v);
         }
         if let Some(v) = api_key {
+            entry.api_key = Some(v);
+        }
+        if let Some(v) = anthropic_key {
             entry.api_key = Some(v);
         }
         self.default_provider = Some(name);
@@ -237,8 +246,9 @@ impl Config {
             .provider_type
             .clone()
             .unwrap_or_else(|| "openai_compat".to_string());
-        if provider_type != "openai_compat" {
-            return Err(ConfigError::UnknownProviderType(provider_type));
+        match provider_type.as_str() {
+            "openai_compat" | "anthropic" => {}
+            other => return Err(ConfigError::UnknownProviderType(other.to_string())),
         }
         let base_url = cfg
             .base_url
@@ -346,7 +356,7 @@ context_window = 200000
         cfg.providers.insert(
             "x".into(),
             ProviderConfig {
-                provider_type: Some("anthropic".into()),
+                provider_type: Some("billing".into()),
                 base_url: Some("u".into()),
                 api_key: None,
                 model: Some("m".into()),
@@ -357,8 +367,30 @@ context_window = 200000
         cfg.default_provider = Some("x".into());
         assert!(matches!(
             cfg.resolve(),
-            Err(ConfigError::UnknownProviderType(t)) if t == "anthropic"
+            Err(ConfigError::UnknownProviderType(t)) if t == "billing"
         ));
+    }
+
+    #[test]
+    fn anthropic_type_resolves() {
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "claude".into(),
+            ProviderConfig {
+                provider_type: Some("anthropic".into()),
+                base_url: Some("https://api.anthropic.com".into()),
+                api_key: Some("sk-ant-xxx".into()),
+                model: Some("claude-sonnet-4-5".into()),
+                context_window: Some(200_000),
+                models: vec!["claude-opus-4".into()],
+            },
+        );
+        cfg.default_provider = Some("claude".into());
+        let resolved = cfg.resolve().unwrap();
+        assert_eq!(resolved.provider_type, "anthropic");
+        assert_eq!(resolved.base_url, "https://api.anthropic.com");
+        assert_eq!(resolved.model, "claude-sonnet-4-5");
+        assert_eq!(resolved.models, vec!["claude-sonnet-4-5", "claude-opus-4"]);
     }
 
     #[test]
