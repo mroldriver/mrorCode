@@ -1685,4 +1685,72 @@ mod tests {
         assert!(!state2.sidebar);
         handle.shutdown();
     }
+
+    // ---- 补全浮层键盘导航（M3 §9.5 遗留自动化） ----
+
+    fn open_slash_completion(state: &mut AppState) {
+        state.prompt.insert_str("/he");
+        state.refresh_completion();
+        assert!(
+            state.completion.as_ref().is_some_and(|c| c.visible()),
+            "expected /he to open completion"
+        );
+        assert!(
+            state.completion.as_ref().unwrap().items.len() >= 2,
+            "navigation test needs >=2 candidates, got {:?}",
+            state.completion.as_ref().unwrap().items
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_up_down_intercepted_and_wraps() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        open_slash_completion(&mut state);
+        let n = state.completion.as_ref().unwrap().items.len();
+
+        // Down 被浮层拦截、selected 前进、文本不动
+        assert!(on_key(&mut state, &k(KeyCode::Down), &handle));
+        assert_eq!(state.completion.as_ref().unwrap().selected, 1);
+        assert_eq!(state.prompt.lines().join(""), "/he");
+
+        // 越过末尾回绕到 0；再按 Up 越过开头回绕到末尾
+        on_key(&mut state, &k(KeyCode::Down), &handle);
+        on_key(&mut state, &k(KeyCode::Down), &handle);
+        assert_eq!(state.completion.as_ref().unwrap().selected, 3 % n);
+        on_key(&mut state, &k(KeyCode::Up), &handle);
+        assert_eq!(state.completion.as_ref().unwrap().selected, 2 % n);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn completion_enter_accepts_navigated_selection() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        open_slash_completion(&mut state);
+        let second_insert = state.completion.as_ref().unwrap().items[1].insert.clone();
+
+        // 先 Down 选中第二项，再 Enter 接受当前选中项（而非固定第一项）
+        on_key(&mut state, &k(KeyCode::Down), &handle);
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+        let line = state.prompt.lines().join("");
+        assert!(
+            line.starts_with(&second_insert),
+            "expected accepted second item {second_insert:?}, got {line:?}"
+        );
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn completion_esc_clears_without_accepting() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        open_slash_completion(&mut state);
+
+        assert!(on_key(&mut state, &k(KeyCode::Esc), &handle));
+        assert!(state.completion.is_none());
+        // 文本原样保留，等待继续编辑
+        assert_eq!(state.prompt.lines().join(""), "/he");
+        handle.shutdown();
+    }
 }

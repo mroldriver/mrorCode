@@ -278,4 +278,49 @@ mod tests {
         assert!(items.iter().any(|i| i.label.contains("main.rs")));
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    fn fake_completion(n: usize) -> Completion {
+        Completion {
+            kind: CompletionKind::Command,
+            row: 0,
+            start_col: 0,
+            end_col: 1,
+            query: String::new(),
+            items: (0..n)
+                .map(|i| CompletionItem {
+                    label: format!("item-{i}"),
+                    insert: format!("/item-{i}"),
+                    hint: String::new(),
+                })
+                .collect(),
+            selected: 0,
+        }
+    }
+
+    #[test]
+    fn move_selection_advances_and_wraps() {
+        let mut c = fake_completion(3);
+        c.move_selection(1);
+        assert_eq!(c.selected, 1);
+        c.move_selection(1);
+        assert_eq!(c.selected, 2);
+        c.move_selection(1); // 越过末尾回到开头
+        assert_eq!(c.selected, 0);
+        c.move_selection(-1); // 越过开头回到末尾
+        assert_eq!(c.selected, 2);
+    }
+
+    #[test]
+    fn move_selection_empty_is_noop() {
+        let mut c = fake_completion(0);
+        c.move_selection(1);
+        assert_eq!(c.selected, 0);
+        assert!(c.current().is_none());
+    }
+
+    #[test]
+    fn empty_completion_not_visible() {
+        assert!(!fake_completion(0).visible());
+        assert!(fake_completion(1).visible());
+    }
 }
