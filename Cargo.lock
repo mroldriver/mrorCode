@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-agent"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-capabilities"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-config"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "serde",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-kernel"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "criterion",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "mrorcode-tui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arboard",
