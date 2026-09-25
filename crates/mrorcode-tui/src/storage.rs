@@ -26,6 +26,8 @@ pub struct KVData {
     /// dark / light。
     pub theme_mode: String,
     pub sidebar: Option<bool>,
+    /// 多会话标签栏是否显示（M4）。
+    pub tabs: Option<bool>,
     pub model: Option<String>,
     pub keybinds: Vec<KeybindEntry>,
     pub prompt_history: Vec<String>,
@@ -37,6 +39,7 @@ impl Default for KVData {
             theme: None,
             theme_mode: "dark".to_string(),
             sidebar: Some(true),
+            tabs: Some(true),
             model: None,
             keybinds: Vec::new(),
             prompt_history: Vec::new(),

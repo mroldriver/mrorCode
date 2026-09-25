@@ -8,14 +8,14 @@ use std::io::{self, Stdout};
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers,
+    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers, MouseEvent,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Widget};
 use ratatui::{Frame, Terminal};
@@ -29,10 +29,20 @@ use crate::commands::{self, AppCommand};
 use crate::store::{AppState, Route};
 use crate::theme::Theme;
 use crate::widgets::dialog::{self, DialogOutcome, SelectPurpose};
-use crate::widgets::{home, permission, prompt, session, sidebar, toast};
+use crate::widgets::toast::ToastLevel;
+use crate::widgets::{home, permission, prompt, session, sidebar, tabs, toast};
 
 const RENDER_COALESCE: Duration = Duration::from_millis(8);
 const SPINNER_TICK: Duration = Duration::from_millis(100);
+
+/// 输入线程 → 主循环的统一输入事件（M4：键/鼠标/粘贴分流）。
+#[derive(Clone, Debug)]
+pub enum InputEvent {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    /// 终端粘贴（crossterm bracketed paste），文本原样交给输入框。
+    Paste(String),
+}
 
 /// TUI 入口。`resume` 为要恢复的会话 id（来自 `--resume`）。
 pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> {
@@ -75,7 +85,7 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
     let initial_theme = state.theme.clone();
     prompt::style_textarea(&mut state, &initial_theme);
 
-    let (_input_thread, mut key_rx) = spawn_input_thread();
+    let (_input_thread, mut input_rx) = spawn_input_thread();
 
     let mut render_due: Option<Pin<Box<Sleep>>> = None;
     let mut spinner: Option<Interval> = None;
@@ -86,10 +96,10 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
         tokio::select! {
             biased;
 
-            maybe_key = key_rx.recv() => {
-                match maybe_key {
-                    Some(key) => {
-                        if on_key(&mut state, &key, &handle) {
+            maybe_input = input_rx.recv() => {
+                match maybe_input {
+                    Some(input) => {
+                        if on_input(&mut state, &input, &handle) {
                             dirty = true;
                         }
                     }
@@ -104,7 +114,7 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
                         dirty = true;
                     }
                     Some(RuntimeEvent::Exited) => {
-                        state.toast("runtime exited");
+                        state.toast_error("runtime exited");
                         dirty = true;
                     }
                     // 通道关闭：runtime 已终止，退出主循环，避免空转
@@ -160,21 +170,167 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
 
 // ---------------- 输入 ----------------
 
-fn spawn_input_thread() -> (std::thread::JoinHandle<()>, UnboundedReceiver<KeyEvent>) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();
+fn spawn_input_thread() -> (std::thread::JoinHandle<()>, UnboundedReceiver<InputEvent>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InputEvent>();
     // 阻塞式 crossterm 读取线程（poll/read 不占 CPU）
     let handle = std::thread::spawn(move || loop {
-        match event::read() {
-            Ok(event::Event::Key(k)) => {
-                if tx.send(k).is_err() {
-                    break;
-                }
-            }
-            Ok(_) => {}
+        let input = match event::read() {
+            Ok(event::Event::Key(k)) => InputEvent::Key(k),
+            Ok(event::Event::Mouse(m)) => InputEvent::Mouse(m),
+            Ok(event::Event::Paste(s)) => InputEvent::Paste(s),
+            Ok(_) => continue,
             Err(_) => break,
+        };
+        if tx.send(input).is_err() {
+            break;
         }
     });
     (handle, rx)
+}
+
+/// 统一输入分派；返回是否需要重绘。
+fn on_input(
+    state: &mut AppState,
+    input: &InputEvent,
+    handle: &mrorcode_agent::RuntimeHandle,
+) -> bool {
+    match input {
+        InputEvent::Key(key) => on_key(state, key, handle),
+        InputEvent::Mouse(mouse) => on_mouse(state, mouse, handle),
+        InputEvent::Paste(text) => on_paste(state, text),
+    }
+}
+
+/// 粘贴：规范化 CR/CRLF 后插入输入框（M2 clipboard 风险表）。
+fn on_paste(state: &mut AppState, text: &str) -> bool {
+    if state.permission.is_some() || !state.dialogs.is_empty() {
+        return false;
+    }
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    for (i, line) in normalized.split('\n').enumerate() {
+        if i > 0 {
+            state.prompt.insert_newline();
+        }
+        state.prompt.insert_str(line);
+    }
+    state.refresh_completion();
+    true
+}
+
+/// 鼠标事件：滚轮滚动消息区、点击命中区域（M4-5）。
+fn on_mouse(
+    state: &mut AppState,
+    mouse: &MouseEvent,
+    _handle: &mrorcode_agent::RuntimeHandle,
+) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            if state.route == Route::Session {
+                state.scroll_up(3);
+                true
+            } else {
+                false
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if state.route == Route::Session {
+                state.scroll_down(3);
+                true
+            } else {
+                false
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            // 优先命中原生控件（标签/侧栏/工具卡/思考块/diff）
+            if let Some(target) = crate::hit::hit_test(&state.hit_regions, mouse.column, mouse.row)
+            {
+                return match target {
+                    crate::hit::HitTarget::Session(id) => state.switch_session(id),
+                    crate::hit::HitTarget::CloseSession(id) => {
+                        state.delete_session(id);
+                        true
+                    }
+                    crate::hit::HitTarget::Tool(id) => {
+                        state.focused_tool = Some(id.clone());
+                        state.toggle_focused_tool();
+                        true
+                    }
+                    crate::hit::HitTarget::Reasoning(uid) => state.toggle_reasoning(uid),
+                    crate::hit::HitTarget::Diff(id) => {
+                        state.focused_tool = Some(id);
+                        state.open_focused_diff()
+                    }
+                    crate::hit::HitTarget::SidebarSection(title) => {
+                        state.toggle_section(&title);
+                        true
+                    }
+                };
+            }
+            // 否则视为文本拖选
+            state.begin_selection(mouse.column, mouse.row);
+            state.select_mode = true;
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if state.select_mode {
+                state.extend_selection(mouse.column, mouse.row);
+                true
+            } else {
+                false
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            // 拖拽结束：保留选区供 y 复制；无实际范围的单击清掉
+            if let Some(sel) = state.selection {
+                let (a, b) = sel.bounds();
+                if a == b {
+                    state.clear_selection();
+                    state.select_mode = false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 键盘选择模式：方向键移动光标、y 复制、esc/q 退出（M4-6）。
+fn handle_select_key(state: &mut AppState, key: &KeyEvent) -> bool {
+    // 初始进入时，若尚无选区则以屏幕中心为锚点
+    if state.selection.is_none() {
+        let (cx, cy) = (state.viewport_lines.max(1) / 2, 0);
+        state.begin_selection(cx, cy);
+    }
+    let pos = state.selection.map(|s| s.cursor);
+    let move_by = |state: &mut AppState, dx: i32, dy: i32| {
+        if let Some(p) = pos {
+            let nx = (p.x as i32 + dx).max(0) as u16;
+            let ny = (p.y as i32 + dy).max(0) as u16;
+            state.extend_selection(nx, ny);
+        }
+    };
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            state.clear_selection();
+            state.select_mode = false;
+        }
+        KeyCode::Char('y') | KeyCode::Char('c') => {
+            if state.copy_selection() {
+                state.toast("已复制选中内容");
+            } else {
+                state.toast("没有可复制的内容");
+            }
+            state.clear_selection();
+            state.select_mode = false;
+        }
+        KeyCode::Up | KeyCode::Char('k') => move_by(state, 0, -1),
+        KeyCode::Down | KeyCode::Char('j') => move_by(state, 0, 1),
+        KeyCode::Left | KeyCode::Char('h') => move_by(state, -1, 0),
+        KeyCode::Right | KeyCode::Char('l') => move_by(state, 1, 0),
+        _ => {}
+    }
+    true
 }
 
 /// 处理一个按键；返回是否需要重绘。
@@ -210,6 +366,11 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
                 true
             }
         };
+    }
+
+    // modal 层：键盘选择模式（M4-6）
+    if state.select_mode {
+        return handle_select_key(state, key);
     }
 
     // Esc 先解除工具卡焦点，再走中断/退出（在 keymap 之前拦截）
@@ -331,6 +492,10 @@ fn apply_action(
             }
             true
         }
+        Rewind => {
+            state.open_rewind_picker();
+            true
+        }
         ScrollUp => {
             if state.route == Route::Session {
                 state.scroll_up(state.viewport_lines / 2 + 1);
@@ -359,6 +524,26 @@ fn apply_action(
         }
         TogglePlanMode => {
             state.toggle_plan_mode(handle);
+            true
+        }
+        ToggleReasoning => state.toggle_last_reasoning(),
+        OpenDiffViewer => state.open_focused_diff(),
+        ToggleTabs => {
+            state.toggle_tabs();
+            true
+        }
+        NextSession => state.cycle_session(true),
+        PrevSession => state.cycle_session(false),
+        ToggleSelect => {
+            state.select_mode = true;
+            true
+        }
+        CopySelection => {
+            if state.copy_selection() {
+                state.toast("已复制选中内容");
+            } else {
+                state.toast("没有可复制的内容");
+            }
             true
         }
         ToggleFocusedTool => state.toggle_focused_tool(),
@@ -442,6 +627,11 @@ fn apply_select(
                 state.switch_session(id);
             }
         }
+        SelectPurpose::Rewind => {
+            if let Ok(keep) = value.parse::<usize>() {
+                state.rewind_to(keep, handle);
+            }
+        }
     }
 }
 
@@ -468,6 +658,24 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         AppCommand::OpenModelPicker => state.open_model_picker(),
         AppCommand::ToggleSidebar => state.toggle_sidebar(),
         AppCommand::TogglePlanMode => state.toggle_plan_mode(handle),
+        AppCommand::ToggleReasoning => {
+            state.toggle_last_reasoning();
+        }
+        AppCommand::OpenDiffViewer => {
+            if !state.open_focused_diff() {
+                state.open_alert(
+                    "diff",
+                    "当前没有聚焦的 diff 工具卡（先 Tab 聚焦含 diff 的工具）",
+                );
+            }
+        }
+        AppCommand::ToggleTabs => state.toggle_tabs(),
+        AppCommand::SelectText => {
+            state.select_mode = true;
+        }
+        AppCommand::RewindSession => {
+            state.open_rewind_picker();
+        }
         AppCommand::Quit => state.should_quit = true,
         AppCommand::Interrupt => {
             if state.phase.is_busy() {
@@ -550,6 +758,7 @@ fn ensure_wake(spinner: &mut Option<Interval>, state: &AppState) {
 fn draw(f: &mut Frame<'_>, state: &mut AppState) {
     // 每帧一次浅克隆（~50 个 Color，栈分配），避免与 state 的可变借用冲突
     let theme = state.theme.clone();
+    state.hit_regions.clear();
     let area = f.area();
     // 整屏背景
     Block::default()
@@ -573,10 +782,44 @@ fn draw(f: &mut Frame<'_>, state: &mut AppState) {
         dialog::render_top(dialog, area, f.buffer_mut(), &theme);
     }
 
-    // toast 浮层（最新在下，底部居中）
-    let toasts: Vec<&str> = state.active_toasts().collect();
+    // which-key 浮层：leader 等待窗口内优先占底部（M4-7）
+    let leader_now = std::time::Instant::now();
+    let whichkey_h = if state.route == Route::Session && state.leader_active(leader_now) {
+        crate::widgets::whichkey::height(&state.keymap, area.width)
+    } else {
+        0
+    };
+    if whichkey_h > 0 {
+        let wk_area = Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(whichkey_h),
+            width: area.width,
+            height: whichkey_h,
+        };
+        crate::widgets::whichkey::render(&state.keymap, wk_area, f.buffer_mut(), &theme);
+    }
+
+    // toast 浮层（最新在下，底部居中；which-key/补全浮层时上移避让，M4-7/11）
+    let toasts: Vec<(ToastLevel, &str)> = state.active_toasts().collect();
     if !toasts.is_empty() {
-        toast::render(area, f.buffer_mut(), &theme, &toasts);
+        // 补全浮层占底部 prompt 行：同样纳入避让（M4-11）
+        let completion_h = if state.completion.as_ref().is_some_and(|c| c.visible()) {
+            1
+        } else {
+            0
+        };
+        let skip_bottom = whichkey_h.max(completion_h);
+        toast::render(area, f.buffer_mut(), &theme, &toasts, skip_bottom);
+    }
+
+    // 记录本帧屏幕文本供选区提取；最后叠加选区高亮（M4-6）
+    let rows = {
+        let buf = f.buffer_mut();
+        crate::selection::rows_from_buffer(buf)
+    };
+    state.screen_rows = rows;
+    if let Some(sel) = state.selection {
+        crate::selection::paint(&sel, f.buffer_mut(), &theme);
     }
 }
 
@@ -604,26 +847,42 @@ fn draw_session(
     };
 
     let prompt_h = prompt::max_height(area.height) + 2;
+    let show_tabs = state.show_tabs && area.height > 6;
+    let tab_h = if show_tabs { tabs::HEIGHT } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(tab_h),
             Constraint::Min(3),
             Constraint::Length(prompt_h),
             Constraint::Length(1),
         ])
         .split(main);
 
-    session::render(state, chunks[0], f.buffer_mut(), theme);
-    prompt::render_prompt(state, chunks[1], f.buffer_mut(), theme);
+    if show_tabs {
+        state.tab_hits = tabs::render(state, chunks[0], f.buffer_mut(), theme);
+        for hit in &state.tab_hits {
+            state.hit_regions.push(crate::hit::HitRegion {
+                rect: hit.rect,
+                target: crate::hit::HitTarget::Session(hit.session_id),
+            });
+        }
+    } else {
+        state.tab_hits.clear();
+    }
+
+    session::render(state, chunks[1], f.buffer_mut(), theme);
+    prompt::render_prompt(state, chunks[2], f.buffer_mut(), theme);
     if let Some(comp) = state.completion.as_ref().filter(|c| c.visible()) {
-        crate::input::render(comp, chunks[1], f.buffer_mut(), theme);
+        crate::input::render(comp, chunks[2], f.buffer_mut(), theme);
     }
     let meta = prompt::meta_line(state, theme);
     f.buffer_mut()
-        .set_line(chunks[2].x, chunks[2].y, &meta, chunks[2].width);
+        .set_line(chunks[3].x, chunks[3].y, &meta, chunks[3].width);
 
     if show_sidebar {
-        sidebar::render(state, side, f.buffer_mut(), theme);
+        let side_hits = sidebar::render(state, side, f.buffer_mut(), theme);
+        state.hit_regions.extend(side_hits);
     }
 }
 
@@ -804,7 +1063,7 @@ mod tests {
         assert_eq!(state.active_toasts().count(), 1);
 
         // 手动把时间戳调旧，gc 后节拍应撤掉
-        if let Some((_, t)) = state.toasts.first_mut() {
+        if let Some((_, t, _)) = state.toasts.first_mut() {
             *t = std::time::Instant::now() - Duration::from_secs(4);
         }
         state.gc_toasts();
@@ -820,7 +1079,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut state = test_state();
         state.route = Route::Session;
-        state.messages.push(MessageView::assistant());
+        state.messages.push(MessageView::assistant(1));
 
         // 3 行 bash 输出：默认折叠，只显示提示
         state.on_runtime_event(
@@ -1126,11 +1385,11 @@ mod tests {
 
         // 造两个会话（消息直接入投影，标题模拟 submit 时设置）
         state.route = Route::Session;
-        state.messages.push(MessageView::user("alpha".into()));
+        state.messages.push(MessageView::user(1, "alpha".into()));
         state.sessions[0].title = "alpha".into();
         state.new_session();
         state.route = Route::Session;
-        state.messages.push(MessageView::user("beta".into()));
+        state.messages.push(MessageView::user(2, "beta".into()));
         state.sessions[1].title = "beta".into();
 
         // ctrl+l 打开会话列表，下移选 alpha 并切换
@@ -1248,6 +1507,148 @@ mod tests {
         // Esc 在无对话框时回到 base 层行为（idle 直接退出）
         on_key(&mut state, &k(KeyCode::Esc), &handle);
         assert!(state.should_quit);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn mouse_click_switches_session_and_scrolls() {
+        use crate::store::MessageView;
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(1, "alpha".into()));
+        state.sessions[0].title = "alpha".into();
+        state.new_session();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(2, "beta".into()));
+        state.sessions[1].title = "beta".into();
+
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        // 点击第一个标签 -> 切到会话 1
+        let target = state.tab_hits[0].rect;
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: target.x + 1,
+            row: target.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(on_mouse(&mut state, &click, &handle));
+        assert_eq!(state.active_session, 1);
+
+        // 滚轮上滚 -> 脱离粘底
+        let scroll = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        on_mouse(&mut state, &scroll, &handle);
+        assert!(!state.stick_bottom || state.backscroll > 0);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn tab_bar_renders_sessions_and_cycles() {
+        use crate::store::MessageView;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(1, "alpha".into()));
+        state.sessions[0].title = "alpha".into();
+        state.new_session();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(2, "beta".into()));
+        state.sessions[1].title = "beta".into();
+
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "alpha"));
+        assert!(buffer_contains(&term, "beta"));
+        assert_eq!(state.tab_hits.len(), 2);
+
+        // ctrl+tab 切回第一个（从第二个循环回到第一个）
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert_eq!(state.active_session, 1);
+
+        // 关闭标签栏：不再渲染 tab 行
+        state.toggle_tabs();
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(state.tab_hits.is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn reasoning_collapses_by_default_and_expands() {
+        use crate::store::MessageView;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.route = Route::Session;
+
+        let mut m = MessageView::assistant(7);
+        m.text = "final answer".into();
+        m.doc.update(&m.text.clone());
+        m.reasoning = "hidden chain of thought".into();
+        m.reasoning_doc.update(&m.reasoning.clone());
+        state.messages.push(m);
+
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(!buffer_contains(&term, "hidden chain"));
+        assert!(buffer_contains(&term, "final answer"));
+
+        // leader r 展开
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        on_key(&mut state, &k(KeyCode::Char('r')), &handle);
+        assert!(state.is_reasoning_expanded(7));
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "hidden chain"));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn focused_diff_tool_opens_viewer() {
+        use crate::store::{MessageView, ToolStatus, ToolView};
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.route = Route::Session;
+
+        let mut m = MessageView::assistant(1);
+        m.tools.push(ToolView {
+            id: "d1".into(),
+            name: "edit_file".into(),
+            arguments: "{}".into(),
+            status: ToolStatus::Ok,
+            output:
+                "Edited a.rs (1 replacement(s))\n--- a.rs\n+++ a.rs\n@@ -1 +1 @@\n-old();\n+new();"
+                    .into(),
+        });
+        state.messages.push(m);
+        state.focused_tool = Some("d1".into());
+
+        // leader d 打开 viewer
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        on_key(&mut state, &k(KeyCode::Char('d')), &handle);
+        assert_eq!(state.dialogs.len(), 1);
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "new();"));
+        // q 关闭
+        on_key(&mut state, &k(KeyCode::Char('q')), &handle);
+        assert!(state.dialogs.is_empty());
         handle.shutdown();
     }
 

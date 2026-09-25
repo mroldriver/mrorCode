@@ -75,6 +75,20 @@ pub enum Action {
     ToggleFocusedTool,
     /// 切换 plan 模式（只读 gate）。
     TogglePlanMode,
+    /// 展开/收起最近一条思考过程（M4-1）。
+    ToggleReasoning,
+    /// 打开当前聚焦工具卡的 diff viewer（M4-3）。
+    OpenDiffViewer,
+    /// 切换多会话标签栏（M4-4）。
+    ToggleTabs,
+    /// 前后切换会话标签（M4-4）。
+    NextSession,
+    PrevSession,
+    /// 进入选择模式 / 复制 / 取消（M4-6）。
+    ToggleSelect,
+    CopySelection,
+    /// 回退会话到历史某轮之前（M4-9）。
+    Rewind,
 }
 
 impl Action {
@@ -103,6 +117,14 @@ impl Action {
             Action::FocusPrevTool => "tool_focus_prev",
             Action::ToggleFocusedTool => "tool_toggle",
             Action::TogglePlanMode => "toggle_plan_mode",
+            Action::ToggleReasoning => "toggle_reasoning",
+            Action::OpenDiffViewer => "open_diff",
+            Action::ToggleTabs => "toggle_tabs",
+            Action::NextSession => "next_session",
+            Action::PrevSession => "prev_session",
+            Action::ToggleSelect => "toggle_select",
+            Action::CopySelection => "copy_selection",
+            Action::Rewind => "rewind",
         }
     }
 
@@ -129,6 +151,13 @@ impl Action {
             "tool_focus_prev" => Action::FocusPrevTool,
             "tool_toggle" => Action::ToggleFocusedTool,
             "toggle_plan_mode" => Action::TogglePlanMode,
+            "toggle_reasoning" => Action::ToggleReasoning,
+            "open_diff" => Action::OpenDiffViewer,
+            "toggle_tabs" => Action::ToggleTabs,
+            "next_session" => Action::NextSession,
+            "prev_session" => Action::PrevSession,
+            "toggle_select" => Action::ToggleSelect,
+            "copy_selection" => Action::CopySelection,
             _ => return None,
         })
     }
@@ -205,6 +234,24 @@ impl Keymap {
             .filter(|b| b.action == action)
             .map(|b| format_binding(b.leader, b.press))
             .collect()
+    }
+
+    /// 当前生效的全部 leader 第二键绑定（which-key 浮层数据源，含用户覆盖）。
+    pub fn leader_bindings(&self) -> Vec<(String, Action)> {
+        let mut out: Vec<(String, Action)> = self
+            .base
+            .iter()
+            .filter(|b| b.leader)
+            .map(|b| {
+                let key = format_binding(false, b.press);
+                (key, b.action)
+            })
+            .collect();
+        // SwitchSession(1..9) 共享 id，但键位不同，需去重保留各键
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        // 同键不同动作（用户覆盖后不应发生，防御去重）
+        out.dedup_by(|a, b| a.0 == b.0);
+        out
     }
 }
 
@@ -433,6 +480,17 @@ fn default_bindings() -> Vec<Binding> {
             Action::Newline,
         ),
         b(false, ctrl(PressCode::Char('j')), Action::Newline),
+        // 选择模式复制键（M4-6）：ctrl+shift+c
+        b(
+            false,
+            KeyPress {
+                code: PressCode::Char('c'),
+                ctrl: true,
+                alt: false,
+                shift: true,
+            },
+            Action::CopySelection,
+        ),
         b(false, key(PressCode::Esc), Action::CancelOrClear),
         b(false, ctrl(PressCode::Char('c')), Action::Quit),
         b(
@@ -448,6 +506,27 @@ fn default_bindings() -> Vec<Binding> {
         b(false, key(PressCode::Up), Action::HistoryPrev),
         b(false, key(PressCode::Down), Action::HistoryNext),
         b(false, key(PressCode::Tab), Action::FocusNextTool),
+        // Ctrl+Tab 前后切换会话标签；Ctrl+Shift+Tab 反向
+        b(
+            false,
+            KeyPress {
+                code: PressCode::Tab,
+                ctrl: true,
+                alt: false,
+                shift: false,
+            },
+            Action::NextSession,
+        ),
+        b(
+            false,
+            KeyPress {
+                code: PressCode::Tab,
+                ctrl: true,
+                alt: false,
+                shift: true,
+            },
+            Action::PrevSession,
+        ),
         // Shift+Tab 切换 plan 模式（FocusPrevTool 保留动作，默认不占用该键）
         b(
             false,
@@ -468,6 +547,12 @@ fn default_bindings() -> Vec<Binding> {
         leader(PressCode::Char('b')),
         leader(PressCode::Char('t')),
         leader(PressCode::Char('m')),
+        leader(PressCode::Char('r')),
+        leader(PressCode::Char('d')),
+        leader(PressCode::Char('[')),
+        leader(PressCode::Char(']')),
+        leader(PressCode::Char('v')),
+        leader(PressCode::Char('w')),
     ];
     let leader_actions = [
         Action::OpenCommandPalette,
@@ -476,6 +561,12 @@ fn default_bindings() -> Vec<Binding> {
         Action::ToggleSidebar,
         Action::OpenThemePicker,
         Action::OpenModelPicker,
+        Action::ToggleReasoning,
+        Action::OpenDiffViewer,
+        Action::PrevSession,
+        Action::NextSession,
+        Action::ToggleSelect,
+        Action::Rewind,
     ];
 
     let mut all = plain;
