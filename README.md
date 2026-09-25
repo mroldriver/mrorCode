@@ -164,7 +164,7 @@ kernel 的 `test-support` feature 提供 `ScriptedProvider`/`EchoTool` 供集成
 
 ## 状态
 
-`0.5.2` — M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）、M4（TUI 精致化）、M5-b（Anthropic provider）已完成；
+`0.5.3` — M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）、M4（TUI 精致化）、M5-b（Anthropic provider）已完成；
 reasoning 折叠、鼠标/选区/剪贴板、which-key、侧边栏、rewind、`task` 子 agent）已完成；M5（硬化发布）规划中，
 见 [docs/roadmap.md](docs/roadmap.md) 末节。
 
