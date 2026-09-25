@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 
 use crate::store::{AppState, MessageView, Role};
 use crate::theme::Theme;
-use crate::widgets::tool_card;
+use crate::widgets::{reasoning, tool_card};
 
 fn message_height(
     m: &mut MessageView,
@@ -17,15 +17,17 @@ fn message_height(
     gen: u64,
     theme: &Theme,
     expanded: &HashSet<String>,
+    expanded_reasoning: &HashSet<u64>,
 ) -> u16 {
     // 文档同步发生在 store 的事件投影中；这里只读缓存，不 clone。
     let body = m.doc.line_count(width, gen, theme).max(1) as u16;
+    let reason = reasoning::height(m, width, expanded_reasoning.contains(&m.uid), gen, theme);
     let tools: u16 = m
         .tools
         .iter()
         .map(|t| 1 + tool_card::extra_height(t, expanded.contains(t.id.as_str())))
         .sum();
-    body + tools + 1
+    reason + body + tools + 1
 }
 
 /// 渲染主消息区。
@@ -53,6 +55,7 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
             gen,
             theme,
             &state.expanded_tools,
+            &state.expanded_reasoning,
         );
         heights.push(h);
         total = total.saturating_add(h);
@@ -65,6 +68,8 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
     // 第二遍：仅布局与绘制与可视区相交的消息
     let spinner = state.spinner_glyph().to_string();
     let focused = state.focused_tool.clone();
+    let focused_reasoning = state.focused_reasoning;
+    let mut hits: Vec<crate::hit::HitRegion> = Vec::new();
     let mut cursor: u16 = 0;
     for (i, m) in state.messages.iter_mut().enumerate() {
         let h = heights[i];
@@ -85,9 +90,13 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
             theme,
             &spinner,
             &state.expanded_tools,
+            &state.expanded_reasoning,
             focused.as_deref(),
+            focused_reasoning,
+            &mut hits,
         );
     }
+    state.hit_regions.extend(hits);
 
     // 空态提示
     if state.messages.is_empty() {
@@ -110,9 +119,45 @@ fn render_message(
     theme: &Theme,
     spinner: &str,
     expanded: &HashSet<String>,
+    expanded_reasoning: &HashSet<u64>,
     focused: Option<&str>,
+    focused_reasoning: Option<u64>,
+    hits: &mut Vec<crate::hit::HitRegion>,
 ) {
     let inner_width = width.saturating_sub(2);
+    let mut row = y0;
+
+    // 思考过程块（先于正文）
+    if reasoning::is_present(m) {
+        let is_exp = expanded_reasoning.contains(&m.uid);
+        let is_focus = focused_reasoning == Some(m.uid);
+        if is_exp {
+            let lines = reasoning::expanded_lines(m, inner_width, gen, theme, is_focus);
+            for line in lines {
+                if row >= area.y + area.height {
+                    break;
+                }
+                buf.set_line(area.x + 1, row, &line, width - 1);
+                row += 1;
+            }
+        } else {
+            if row < area.y + area.height {
+                let line = reasoning::collapsed_line(m, theme, is_focus);
+                buf.set_line(area.x + 1, row, &line, width - 1);
+                hits.push(crate::hit::HitRegion {
+                    rect: Rect {
+                        x: area.x,
+                        y: row,
+                        width,
+                        height: 1,
+                    },
+                    target: crate::hit::HitTarget::Reasoning(m.uid),
+                });
+            }
+            row += 1;
+        }
+    }
+
     let lines: Vec<Line<'static>> = {
         let mut lines = m.doc.lines(inner_width, gen, theme);
         if m.is_error {
@@ -131,7 +176,7 @@ fn render_message(
     };
 
     for (i, line) in lines.iter().enumerate() {
-        let y = y0 + i as u16;
+        let y = row + i as u16;
         if y >= area.y + area.height {
             break;
         }
@@ -148,19 +193,39 @@ fn render_message(
         buf.set_line(area.x + 2, y, line, inner_width);
     }
 
-    let mut row = y0 + lines.len() as u16;
+    let mut row = row + lines.len() as u16;
     for tool in &m.tools {
         let is_focused = focused.is_some_and(|f| f == tool.id);
         let is_expanded = expanded.contains(tool.id.as_str());
         if row < area.y + area.height {
             let l = tool_card::line(tool, spinner, theme, is_focused);
             buf.set_line(area.x + 1, row, &l, width - 1);
+            hits.push(crate::hit::HitRegion {
+                rect: Rect {
+                    x: area.x,
+                    y: row,
+                    width,
+                    height: 1,
+                },
+                target: crate::hit::HitTarget::Tool(tool.id.clone()),
+            });
         }
         row += 1;
         let extras = tool_card::extra_lines(tool, is_expanded, is_focused, width - 3, theme);
         for l in extras {
             if row < area.y + area.height {
                 buf.set_line(area.x + 1, row, &l, width - 1);
+                if tool_card::is_diff_output(tool) {
+                    hits.push(crate::hit::HitRegion {
+                        rect: Rect {
+                            x: area.x,
+                            y: row,
+                            width,
+                            height: 1,
+                        },
+                        target: crate::hit::HitTarget::Diff(tool.id.clone()),
+                    });
+                }
             }
             row += 1;
         }

@@ -24,6 +24,8 @@ pub enum SelectPurpose {
     Model,
     Session,
     Command,
+    /// 回退到某轮之前（M4-9）。
+    Rewind,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +45,8 @@ pub enum Dialog {
     Confirm(crate::widgets::dialog::forms::ConfirmState),
     Alert(crate::widgets::dialog::forms::AlertState),
     Help(crate::widgets::dialog::forms::HelpState),
+    /// 独立 diff viewer（M4-3）。
+    Diff(crate::widgets::dialog::diff::DiffState),
 }
 
 #[derive(Clone, Debug)]

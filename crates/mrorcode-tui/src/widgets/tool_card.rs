@@ -36,6 +36,11 @@ pub fn is_expandable(tool: &ToolView) -> bool {
     tool.output.trim().lines().count() > 1
 }
 
+/// 输出含 unified diff（可打开 diff viewer）。
+pub fn is_diff_output(tool: &ToolView) -> bool {
+    crate::widgets::diff::looks_like_diff(&tool.output)
+}
+
 fn output_line_count(tool: &ToolView) -> usize {
     tool.output.trim().lines().count()
 }
