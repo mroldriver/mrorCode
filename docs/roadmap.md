@@ -1230,6 +1230,12 @@ server（filesystem）冒烟。
 
 **目标**：三平台 + MSRV 自动门禁；Windows 不依赖手工装 VS。
 
+> **参考文档（待查阅）**：
+> - Pipeline 总览：https://docs.gitcode.com/docs/help/home/org_project/pipeline/
+> - Node.js CI 示例：https://docs.gitcode.com/docs/help/home/org_project/pipeline/examples/nodejs-ci/
+>
+> 落地时按这两个页面的格式编写流水线（gitcode CI 为 Web UI 配置，非仓库 YAML）。
+
 - **矩阵**：`windows-latest / macos-latest / ubuntu-latest` × 稳定工具链；另起 1 个 job 钉
   MSRV（`rust-version = "1.88"`）仅在 ubuntu 上跑（快）。
 - **每 job 步骤**：
