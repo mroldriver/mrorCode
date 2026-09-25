@@ -230,6 +230,34 @@ impl Conversation {
         self.repair_pairing();
         removed
     }
+
+    /// 回退（rewind）：只保留首条 system 与最早 `keep_turns` 个 user turn，其后全部丢弃并修复配对。
+    ///
+    /// 用于 M4-9：rewind 到历史某轮之前继续对话。snapshot 会被覆盖，transcript 保留。
+    /// 「一个 turn」与 [`Self::compact`] 同义：一条 user 消息及其后到下一个 user 之前的所有消息。
+    /// 返回被删除的条数；`keep_turns` 不小于现有 turn 数时视为 no-op 返回 0。
+    pub fn rewind(&mut self, keep_turns: usize) -> usize {
+        if keep_turns == 0 {
+            return 0;
+        }
+        // 定位全部 user 消息下标。
+        let user_indices: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role == Role::User)
+            .map(|(i, _)| i)
+            .collect();
+        if user_indices.len() <= keep_turns {
+            return 0;
+        }
+        // 截断点 = 第 keep_turns+1 条 user 消息处；其前的消息整体保留（含本轮收尾的 assistant 消息）。
+        let cut = user_indices[keep_turns];
+        let removed = self.messages.len() - cut;
+        self.messages.truncate(cut);
+        self.repair_pairing();
+        removed
+    }
 }
 
 /// 截断到最多 `max` 个字符（按 UTF-8 字符边界），超出加省略号。
@@ -319,6 +347,38 @@ mod tests {
         convo.push(Message::system("SYS"));
         turn_with_tool(&mut convo, "u0", "c0");
         assert_eq!(convo.compact(4), 0);
+    }
+
+    #[test]
+    fn rewind_truncates_and_repairs() {
+        let mut convo = Conversation::new();
+        convo.push(Message::system("SYS"));
+        turn_with_tool(&mut convo, "u0", "c0");
+        turn_with_tool(&mut convo, "u1", "c1");
+        turn_with_tool(&mut convo, "u2", "c2");
+        let total = convo.messages.len();
+        // 保留前 1 个 turn（u0 含其 tool 结果与 answer）；配对修复
+        let removed = convo.rewind(1);
+        assert!(removed > 0);
+        assert_eq!(convo.messages.len(), total - removed);
+        assert_eq!(convo.messages[0].role, Role::System);
+        assert_eq!(convo.messages[0].text, "SYS");
+        // 保留的 turn 末尾是 u0 的 answer
+        assert_eq!(convo.messages.last().unwrap().text, "answer for u0");
+        // 无孤儿 tool 结果
+        convo.repair_pairing();
+        let before = convo.messages.len();
+        convo.repair_pairing();
+        assert_eq!(before, convo.messages.len());
+    }
+
+    #[test]
+    fn rewind_noop_when_keep_beyond_turns() {
+        let mut convo = Conversation::new();
+        convo.push(Message::user("u0"));
+        assert_eq!(convo.rewind(100), 0);
+        assert_eq!(convo.rewind(1), 0);
+        assert_eq!(convo.rewind(0), 0);
     }
 
     #[test]

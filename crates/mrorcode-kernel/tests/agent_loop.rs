@@ -464,6 +464,45 @@ async fn loaded_session_continues_context() {
 }
 
 #[tokio::test]
+async fn rewind_truncates_loaded_session_turns() {
+    let provider = RecordingProvider {
+        calls: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+    };
+    let calls = Arc::clone(&provider.calls);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .system_prompt("sys")
+        .spawn();
+
+    // 注入含 3 个 turn 的历史（无 system）。
+    let mut convo = mrorcode_kernel::Conversation::new();
+    for i in 0..3 {
+        convo.push(mrorcode_kernel::Message::user(format!("q{i}")));
+        convo.push(mrorcode_kernel::Message::assistant_text(format!("a{i}")));
+    }
+    handle
+        .commands
+        .send(AgentCommand::LoadSession {
+            session_id: 7,
+            conversation: convo,
+        })
+        .unwrap();
+    // 回退到保留最早 1 个 turn（q0/a0），再 submit。
+    handle
+        .commands
+        .send(AgentCommand::Rewind {
+            session_id: 7,
+            keep_turns: 1,
+        })
+        .unwrap();
+    submit_and_wait(&mut handle, 7, "new-question").await;
+
+    let recorded = calls.lock().await.clone();
+    // q0/a0（2 条保留）+ 新 user = 3 条（注入的会话不带 system 前缀）
+    assert_eq!(recorded[0].0, 3, "message count after rewind + submit");
+}
+
+#[tokio::test]
 async fn plan_mode_blocks_risky_tools() {
     let mut reg = ToolRegistry::new();
     reg.insert(Arc::new(RiskyTool));

@@ -291,6 +291,24 @@ async fn run_agent(
                     Some(AgentCommand::LoadSession { session_id, conversation }) => {
                         state.conversations.insert(session_id, conversation);
                     }
+                    Some(AgentCommand::Rewind {
+                        session_id,
+                        keep_turns,
+                    }) => {
+                        // 仅空闲时生效；running 中（或排队中）忽略，避免与进行中的对话竞争
+                        if running.is_none() && pending.is_empty() {
+                            if let Some(convo) = state.conversations.get_mut(&session_id) {
+                                let removed = convo.rewind(keep_turns);
+                                if removed > 0 {
+                                    tracing::info!(
+                                        session_id,
+                                        removed,
+                                        "rewound conversation to keep_turns={keep_turns}"
+                                    );
+                                }
+                            }
+                        }
+                    }
                     Some(AgentCommand::Submit { session_id, text }) => {
                         if running.is_some() {
                             // 轮次运行中：FIFO 排队（M2 不做跨会话并发）

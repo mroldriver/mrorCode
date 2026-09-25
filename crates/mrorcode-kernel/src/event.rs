@@ -19,6 +19,8 @@ pub enum AgentCommand {
     SetPlanMode(bool),
     /// 回应一个 [`AgentEvent::Request`]（审批等）。
     Respond(u64, Value),
+    /// 回退（rewind）：把会话截断到保留最早 `keep_turns` 个 user turn；空闲时生效（M4-9）。
+    Rewind { session_id: u64, keep_turns: usize },
     /// 取消当前轮次。
     Cancel,
     /// 关闭 agent。

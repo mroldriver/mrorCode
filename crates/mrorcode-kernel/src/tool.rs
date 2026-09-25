@@ -84,7 +84,8 @@ pub trait Tool: Send + Sync {
 }
 
 /// 工具注册表（BTreeMap 保证确定性顺序）。
-#[derive(Default)]
+/// 深层工具对象是 `Arc`，因此可直接 `Clone`（浅拷贝共享同一工具实例）。
+#[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
 }
