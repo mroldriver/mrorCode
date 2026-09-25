@@ -159,12 +159,12 @@ kernel 的 `test-support` feature 提供 `ScriptedProvider`/`EchoTool` 供集成
 
 - [AGENTS.md](AGENTS.md) — 开发者/Agent 快速上手：命令、架构规则、注意事项
 - [docs/project-plan-atomcode.md](docs/project-plan-atomcode.md) — 产品总体设计与技术选型
-- [docs/roadmap.md](docs/roadmap.md) — M1–M3 里程碑计划与完成报告、性能基线
+- [docs/roadmap.md](docs/roadmap.md) — M1–M4 里程碑计划与完成报告、性能基线，M5 方向
 - [docs/README.md](docs/README.md) — 文档索引
 
 ## 状态
 
-`0.5.0` — M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）、M4（TUI 精致化：标签栏、diff viewer、
+`0.5.1` — M1（骨架）、M2（TUI 核心体验）、M3（Agent 能力增强）、M4（TUI 精致化：标签栏、diff viewer、
 reasoning 折叠、鼠标/选区/剪贴板、which-key、侧边栏、rewind、`task` 子 agent）已完成；M5（硬化发布）规划中，
 见 [docs/roadmap.md](docs/roadmap.md) 末节。
 

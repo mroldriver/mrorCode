@@ -1180,6 +1180,25 @@ crates/mrorcode-tui/src/
 
 > 遗留：真实终端手工冒烟（完成判据末条）待人工执行。
 
+#### 8.4 收尾补遗（2026-09-25，M4 完成后）
+
+M4 交付后核查计划文件遗留，处理三项：
+
+1. **修复可复现性缺陷：`rust-toolchain.toml` 钉死 gnu 三元组。**
+   原文件仅写 `channel = "stable"`，裸 channel 在 Windows rustup 下按安装器 default host
+   解析为本机的 `x86_64-pc-windows-msvc`，而项目约定与 `.cargo/config.toml`（dlltool）
+   均为 windows-gnu；本机无 MSVC `link.exe`，导致 plain `cargo check/test` 在 build script
+   链接阶段全灭。改为 `channel = "stable-x86_64-pc-windows-gnu"` 后，AGENTS.md 标准命令
+   （`cargo test/clippy/fmt --workspace`）在本机直接通过，230 测试全绿。
+2. **补齐 M3 §9.5 遗留的补全浮层键盘导航自动化。** 新增 `input::move_selection_*`
+   纯函数回绕单测，以及经 `on_key` 驱动的浮层导航用例：Up/Down 被拦截且 selected 回绕、
+   Enter 接受「导航后」的当前项（非固定首项）、Esc 清除且文本原样保留。
+3. **`config.example.toml` 补 compaction / MCP 样例**（M3 步骤 6 计划项）；README 的
+   MCP/compaction/resume 章节已在 M4 docs 提交中补齐，本次仅修正其「M1–M3」过期表述为 M1–M4。
+
+仍需人工（无法自动化）：真实终端下鼠标/剪贴板/标签/rewind 冒烟，以及真实 stdio MCP
+server（filesystem）冒烟。
+
 ---
 
 ## M5 后续里程碑方向

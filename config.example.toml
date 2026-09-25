@@ -22,3 +22,18 @@ context_window = 128000
 # context_window = 32768
 #
 # 使用非默认条目：mrorcode --provider local run "hello"
+
+# 上下文压缩（可选，全部有默认值）：
+# [compaction]
+# keep_recent = 6            # 保留最近 N 个 user turn 原文
+# threshold_tokens = 100000  # 估算 token 超过则压缩；0 = 关闭
+
+# MCP stdio server（可选，可声明多个）：
+# [[mcp.servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+# env = { FOO = "bar" }
+#
+# 启动时拉起子进程并把其工具注册为 mcp__<server>__<tool>；
+# 断连 fail-closed。未声明即不启用。
