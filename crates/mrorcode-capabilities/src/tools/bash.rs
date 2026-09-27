@@ -400,5 +400,8 @@ mod tests {
         assert_eq!(classify_command("tar cf out.tar dir"), RiskLevel::Risky);
         assert_eq!(classify_command(""), RiskLevel::Risky);
         assert_eq!(classify_command("unknownprogram --help"), RiskLevel::Risky);
+        assert_eq!(classify_command("cargo --version"), RiskLevel::Risky);
+        assert_eq!(classify_command("cargo build"), RiskLevel::Risky);
+        assert_eq!(classify_command("rustc --version"), RiskLevel::Risky);
     }
 }

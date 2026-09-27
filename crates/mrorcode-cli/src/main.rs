@@ -154,7 +154,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             for w in &assembly.warnings {
                 eprintln!("mcp warning: {w}");
             }
-            mrorcode_tui::run(assembly, cli.common.resume).await?;
+            mrorcode_tui::run(assembly, cli.common.resume, loaded.config, options).await?;
             std::process::exit(0);
         }
     }

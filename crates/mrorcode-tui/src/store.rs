@@ -112,6 +112,14 @@ pub struct AppState {
     pub model: String,
     /// 同 provider 下可选模型（config `models = []`，空则只有当前模型）。
     pub available_models: Vec<String>,
+    /// 当前 provider 条目名（M5-e）。
+    pub current_provider: String,
+    /// 完整配置快照（provider 选择器 + 重建 runtime 用，M5-e）。
+    pub config: mrorcode_config::Config,
+    /// 装配选项（重建 runtime 时复用，M5-e）。
+    pub assemble_options: mrorcode_agent::AssembleOptions,
+    /// 已选定待执行的 provider 切换（在事件循环顶部处理，M5-e）。
+    pub pending_provider_switch: Option<String>,
     pub working_dir: PathBuf,
     pub sidebar: bool,
     /// 多会话标签栏是否显示（M4-4）。
@@ -161,6 +169,8 @@ pub struct AppState {
 
     /// spinner 帧计数。
     pub spinner_ticks: u32,
+    /// 输入光标当前处于亮帧（应用层驱动闪烁，空闲也翻转）。
+    pub cursor_blink_on: bool,
 
     /// 键位表（默认 + KV 用户覆盖）。
     pub keymap: Keymap,
@@ -262,6 +272,10 @@ impl AppState {
             should_quit: false,
             model,
             available_models,
+            current_provider: String::new(),
+            config: mrorcode_config::Config::default(),
+            assemble_options: mrorcode_agent::AssembleOptions::default(),
+            pending_provider_switch: None,
             working_dir,
             sidebar,
             show_tabs,
@@ -292,6 +306,7 @@ impl AppState {
             focused_reasoning: None,
             focused_tool: None,
             spinner_ticks: 0,
+            cursor_blink_on: true,
             keymap,
             leader_until: None,
             plan_mode: false,
@@ -526,6 +541,69 @@ impl AppState {
         self.kv.data.model = Some(name.to_string());
         let _ = self.kv.save();
         true
+    }
+
+    /// 注入完整配置与装配选项（M5-e；启动时调用一次）。
+    pub fn attach_config(
+        &mut self,
+        config: mrorcode_config::Config,
+        options: mrorcode_agent::AssembleOptions,
+        current_provider: String,
+    ) {
+        self.config = config;
+        self.assemble_options = options;
+        self.current_provider = current_provider;
+    }
+
+    /// 打开 provider 选择器：列出配置中的全部条目（M5-e）。
+    pub fn open_provider_picker(&mut self) -> bool {
+        if self.phase.is_busy() {
+            return false;
+        }
+        // providers 为 HashMap，按名称排序保证展示稳定。
+        let mut names: Vec<String> = self.config.providers.keys().cloned().collect();
+        names.sort();
+        if names.len() < 2 {
+            return false;
+        }
+        let items = names
+            .into_iter()
+            .map(|n| SelectItem {
+                hint: if n == self.current_provider {
+                    "active".to_string()
+                } else {
+                    String::new()
+                },
+                group: "Providers".to_string(),
+                label: n.clone(),
+                value: n,
+            })
+            .collect();
+        self.push_dialog(Dialog::Select(SelectState::new(
+            "switch provider",
+            SelectPurpose::Provider,
+            items,
+        )));
+        true
+    }
+
+    /// 取当前活动会话的会话体（provider 切换后注入新 runtime 用，M5-e）。
+    pub fn active_conversation(&self) -> Conversation {
+        conversation_from_view(&self.messages)
+    }
+
+    /// 切换完成后更新 provider/模型相关投影（M5-e）。
+    pub fn note_provider_switched(
+        &mut self,
+        provider: String,
+        model: String,
+        available_models: Vec<String>,
+    ) {
+        self.current_provider = provider;
+        self.model = model.clone();
+        self.available_models = available_models;
+        self.kv.data.model = Some(model);
+        let _ = self.kv.save();
     }
 
     /// 推入一条信息 toast；与上一条相同则不重复，上限 5 条。

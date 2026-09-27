@@ -46,6 +46,7 @@ pub fn action_label(a: Action) -> &'static str {
         Action::ToggleSelect => "选择文本",
         Action::CopySelection => "复制选区",
         Action::Rewind => "回退会话",
+        Action::SwitchProvider => "切换 provider",
     }
 }
 

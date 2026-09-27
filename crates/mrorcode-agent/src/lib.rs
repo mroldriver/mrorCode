@@ -5,8 +5,8 @@ mod persona;
 mod runtime;
 
 pub use assemble::{
-    assemble, assemble_openai_compat, assemble_openai_compat_with_model, AssembleOptions, Assembly,
-    InitialModel,
+    assemble, assemble_openai_compat, assemble_openai_compat_with_model, rebuild_assembly,
+    AssembleOptions, Assembly, InitialModel,
 };
 pub use mrorcode_capabilities::session::{SessionStore, SESSIONS_DIR};
 pub use runtime::{start, DriverCommand, RuntimeEvent, RuntimeHandle, RuntimeStart};

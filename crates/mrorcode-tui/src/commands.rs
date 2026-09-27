@@ -23,6 +23,8 @@ pub enum AppCommand {
     ToggleTabs,
     SelectText,
     RewindSession,
+    /// 跨 provider 切换（重建 runtime，M5-e）。
+    SwitchProvider,
     Quit,
     Interrupt,
 }
@@ -169,6 +171,13 @@ pub fn registry() -> &'static [CommandSpec] {
             default_keys: &["esc esc"],
         },
         CommandSpec {
+            command: AppCommand::SwitchProvider,
+            name: "switch provider",
+            desc: "切换到另一个 provider（重建运行时，会话不丢）",
+            category: CommandCategory::App,
+            default_keys: &["leader s"],
+        },
+        CommandSpec {
             command: AppCommand::Quit,
             name: "quit",
             desc: "退出",
@@ -195,6 +204,7 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::ToggleTabs => "toggle_tabs",
         AppCommand::SelectText => "select_text",
         AppCommand::RewindSession => "rewind_session",
+        AppCommand::SwitchProvider => "switch_provider",
         AppCommand::Quit => "quit",
         AppCommand::Interrupt => "interrupt",
     }
@@ -224,6 +234,7 @@ pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
         AppCommand::ToggleTabs => A::ToggleTabs,
         AppCommand::SelectText => A::ToggleSelect,
         AppCommand::RewindSession => A::Rewind,
+        AppCommand::SwitchProvider => A::SwitchProvider,
         AppCommand::Quit => A::Quit,
         AppCommand::Interrupt => A::Interrupt,
         AppCommand::OpenCommandPalette => A::OpenCommandPalette,

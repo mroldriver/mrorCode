@@ -145,3 +145,31 @@ pub async fn drain_until_terminal(handle: &mut AgentHandle) -> Vec<AgentEvent> {
     }
     out
 }
+
+/// 提取事件的类型标签（conformance 序列断言用，M5-d）。
+pub fn event_type_label(ev: &AgentEvent) -> &'static str {
+    match ev {
+        AgentEvent::TurnStarted => "TurnStarted",
+        AgentEvent::TextDelta(_) => "TextDelta",
+        AgentEvent::Reasoning(_) => "Reasoning",
+        AgentEvent::ToolStarted { .. } => "ToolStarted",
+        AgentEvent::ToolResult { .. } => "ToolResult",
+        AgentEvent::Usage { .. } => "Usage",
+        AgentEvent::Request { .. } => "Request",
+        AgentEvent::TurnComplete { .. } => "TurnComplete",
+        AgentEvent::Error { .. } => "Error",
+        AgentEvent::Cancelled => "Cancelled",
+    }
+}
+
+/// 断言事件序列的类型标签与期望一致（顺序敏感）。
+///
+/// conformance 套件：无论底层 provider 是 OpenAI 兼容还是 Anthropic，
+/// agent 循环消费 StreamEvent 后产出的 AgentEvent 类型序列在标准场景下应一致。
+pub fn assert_event_types(events: &[AgentEvent], expected: &[&str]) {
+    let actual: Vec<&str> = events.iter().map(event_type_label).collect();
+    assert_eq!(
+        actual, expected,
+        "event type sequence mismatch (actual={actual:?}, expected={expected:?})"
+    );
+}

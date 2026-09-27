@@ -1254,6 +1254,31 @@ server（filesystem）冒烟。
   （SChannel/Security.framework 在对应平台是系统库，CI 需带系统 OpenSSL？——实为 native-tls，
   mac/linux 走 Security.framework / Schannel，无需 OpenSSL；若报缺库再补 `brew install` 之类）。
 
+#### M5-a 实施记录（2026-09-26）
+
+**调研结论（与原计划假设的偏差）**：
+
+1. **gitcode 流水线是 YAML 文件，非纯 Web UI**：文件放 `.gitcode/workflows/*.yml`，语法几乎与
+   GitHub Actions 一致（`name`/`on`/`jobs`/`runs-on`/`uses: checkout`/`run`）。原计划
+   "Web UI 配置非仓库 YAML"的判断有误。
+2. **官方托管 Runner 只有 Linux**：`ubuntu-latest`（24.04，x64/arm64）与 `euler-latest`，
+   三段式标签 `[os, arch, flavor]`。**无 Windows/macOS 托管池**；Win/macOS 需自托管 runner。
+3. **无官方 `setup-rust` action**，但 Ubuntu runner 预装了 Rust stable（via rustup）；
+   用 `rustup toolchain install <ver> --profile default` 即可。
+4. **concurrency 语法**：gitcode 用 `max: 1` + `exceed-action: QUEUE`，非 GitHub 的
+   `cancel-in-progress`。
+
+**落地（用户决策：先只做 Linux 托管 CI）**：
+
+- 新增 `.gitcode/workflows/ci.yml`，三个 job：
+  - `linux`（ubuntu x64 medium）：fmt + clippy + test + release 构建；
+  - `linux-arm64`（ubuntu arm64 medium）：test；
+  - `msrv`（ubuntu x64 small）：钉 `RUSTUP_TOOLCHAIN=1.88.0`，test + clippy。
+- `rust-toolchain.toml` **不改**（钉死 `stable-x86_64-pc-windows-gnu` 是本机无 MSVC 的必需）；
+  Linux CI 用 `RUSTUP_TOOLCHAIN` 环境变量覆盖 host 三元组。
+- Windows/macOS 验证：暂缓，待后续配置自托管 runner 或另用 GitHub Actions 矩阵。
+- **待人工**：push 后在 gitcode 仓库「流水线」Tab 确认 workflow 被识别并跑通。
+
 ---
 
 ### M5-b Anthropic provider
@@ -1325,18 +1350,94 @@ server（filesystem）冒烟。
 - **验收**：切换 provider 后当前会话能继续对话、上下文不丢；不满足则降级为「需重启」的明示提示。
 - **风险**：重建 runtime 时会话状态迁移 → 复用 M3 的 snapshot/resume 路径，不另造状态机。
 
+#### M5-e 设计（2026-09-26，轻量方案）
+
+**现状调研结论**：
+
+- TUI `app.rs:48-55` 把 `Assembly` 解构为栈上 `handle`/`events`，`AppState` 不持有 handle；
+  所有动作经 `&RuntimeHandle` 临时借用。无重建入口。
+- `SetModel`（`runtime.rs:74` → `AgentCommand::SetModel` → `agent.rs:285`）只改
+  `chat_options.model` 字符串，下一轮生效；**不重建 HTTP client**。跨 provider（base_url/
+  api_key/协议体都变）无法复用，必须重新 `assemble()`。
+- 会话恢复原语已就绪：`AgentCommand::LoadSession`（`agent.rs:291`）注入 provider 无关的
+  kernel `Conversation`。切换后用新 `handle.resume(id, convo)` 即可延续上下文。
+
+**轻量方案流程**：
+
+1. `AppState` 新增 `config_snapshot: Config` + `current_provider: String`（启动时从 CLI 传入）。
+2. 新增命令 `SwitchProvider` → 弹出 provider 选择对话框（列出 `config.providers` 的 keys，
+   类似现有模型选择器 `SelectPurpose::Model`）。
+3. 用户选定目标 provider 后，事件循环执行重建：
+   a. 从 `SessionStore` 读当前活动会话的最新 snapshot（`SessionRecord.conversation`）；
+   b. `handle.shutdown()` 旧 runtime（等 `RuntimeEvent::Exited`）；
+   c. `assemble()` 用目标 provider 的 `ResolvedProvider` 造新 `Arc<dyn LlmProvider>`；
+   d. 新 `handle.resume(active_session_id, conversation)` 恢复会话体；
+   e. 替换 `handle`/`events` 变量，循环继续；toast 提示「已切换 provider：X」。
+4. **事件循环改造**：`handle`/`events` 从栈上局部变量改为循环内可替换（`Option<RuntimeHandle>`
+   + 新的 `UnboundedReceiver`）；`on_input` 返回扩展信号（`Dirty` / `RebuildProvider(name)`）。
+
+**不做（daemon 方案）**：常驻进程、多客户端、ACP——仅在有明确多客户端需求时另立里程碑。
+
+**降级**：重建失败（如目标 provider 缺 api_key）时，toast 报错并保持旧 runtime 不变，
+不崩溃、不丢会话。
+
+**实现记录（2026-09-26，v0.5.5）**：按本设计落地，关键顺序细化为「先构建新 Assembly
+成功 → 再关停旧 runtime → 替换句柄 → resume」，确保构建失败时旧 runtime 零影响。
+入口为 `leader s` / 命令面板「switch provider」。新增测试：config `resolve_named` 2 个、
+TUI provider picker/拒绝切换/成功替换/失败保留 4 个。
+
 ---
 
 ### M5 验收清单（总）
 
-- [ ] M5-a：三平台 + MSRV CI 全绿，Windows 全自动化。（gitcode CI 为 Web UI 配置，待人工在面板创建）
+- [x] M5-a：跨平台 CI（决策：gitcode 托管仅 Linux，Win/macOS 本地验证）。
+  - 已完成（2026-09-26）：`.gitcode/workflows/ci.yml` 三个 job——Linux x64（fmt/clippy/test/
+    release）、Linux arm64（test）、MSRV 1.88（test/clippy）。Linux 上用 `RUSTUP_TOOLCHAIN`
+    覆盖 `rust-toolchain.toml` 的 windows-gnu host。
+  - 决策（2026-09-26）：gitcode 无 Win/macOS 托管 runner；不引入 GitHub Actions、不自建
+    runner。Win/macOS 验证维持本地手工（`cargo test/clippy/fmt` + release 构建）。
+  - 待人工：push 到 main 后在 gitcode「流水线」Tab 确认 workflow 跑通（当前工作分支 develop，
+    workflow 触发分支为 main）。
 - [x] M5-b：`type = "anthropic"` 可用，工具往返不破坏配对，wiremock 单测覆盖。（2026-09-25 完成，241 测试全绿）
-- [ ] M5-c：三平台单二进制产物，体积基线记录（优化项按数据决定开否）。
-  - 已完成：`panic = "abort"` 写入 release profile（体积 7.9→7.0 MB，windows-gnu 兼容）；
-    mimalloc 评估后否决（本机无完整 gcc，与 ring/rustls 同约束）。
-  - 待 M5-a CI 就绪后：cargo-dist 三平台产物上传。
+- [x] M5-c：单二进制产物打包（Linux 托管 + Windows 交叉编译）。
+  - 已完成：`panic = "abort"` 写入 release profile（体积 7.9→7.0 MB，windows-gnu 兼容，
+    v0.5.4 release 实测 6.99 MB）；mimalloc 评估后否决（本机无完整 gcc，与 ring/rustls 同约束）。
+  - 已完成（2026-09-26，v0.5.6）：新增 `.gitcode/workflows/release.yml`，tag `v*` 或手动触发，
+    三个产物 job——linux-x64、linux-arm64（原生 release，打 .tar.gz）、windows-x64（mingw-w64
+    交叉编译 `x86_64-pc-windows-gnu`，打 .zip），各 `upload-artifact` 保留 30 天。
+  - 取舍：cargo-dist 否决（优势依赖多 OS runner，Linux-only 下手写更简单）；macOS 无法在
+    Linux 合法交叉（缺 SDK），维持本地 `cargo build --release` 手工出包；Release 页面发布
+    暂不自动化，先以构件（artifacts）方式提供。
+  - 待人工：push tag（如 `v0.5.6`）后在 gitcode「流水线」确认三个 job 跑通，并回填
+    Linux/交叉产物的实测体积基线。
 - [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
-- [ ] M5-e：跨 provider 切换有落地方案（轻量或 daemon，按设计文档结论）。
+  - 已完成（2026-09-26，v0.5.4）：headless `jsonl_event` 纯函数抽离 + 3 个契约测试冻结 11 种事件 schema；
+    kernel testkit 新增 `event_type_label`/`assert_event_types`，3 个 conformance 集成测试
+    （纯文本/工具调用/错误终止的事件类型序列）。
+- [x] M5-e：跨 provider 切换落地（轻量方案，运行时重建）。
+  - 已完成（2026-09-26，v0.5.5）：
+    - config 新增 `resolve_named(name)`（按条目解析，不受 default_provider/default_model 影响）；
+    - agent 新增 `rebuild_assembly()`（只构建新 Assembly，不关旧的）；
+    - TUI 新增命令「switch provider」（`leader s`）+ provider 选择器，app.rs 事件循环
+      的 handle/events 改为可替换；切换流程：先建成功新 runtime → 再关停旧的 → resume
+      当前会话（会话体 provider 无关）→ 更新模型投影；plan 模式重新下发。
+    - 失败降级：构建失败时旧 runtime 原样保留；busy 时拒绝切换。
+    - 审批 grant 走共享内存 store，新 runtime 自动继承已授权命令。
+
+### 人工冒烟记录（2026-09-27，v0.5.6，豆包 OpenAI 兼容）
+
+| 项 | 结果 | 说明 |
+|---|---|---|
+| 基础对话流式 | ✅ | |
+| 多行输入（Ctrl+J） | ✅ | |
+| read 读文件自动放行 | ✅ | |
+| bash 审批弹窗 | ⚠️ 未触发 | 模型直接凭记忆回答、**未调 bash 工具**（无工具卡），故不经过审批；非缺陷。需明确要求「用 bash 实际运行」才会弹窗 |
+| Esc 中断 | ℹ️ 行为差异 | busy 时一次 Esc 即中断（设计为双击）；**空闲 Esc 退出已取消**（v0.5.8，避免误触，空闲 Esc 仅吞键不退出）。busy 是否对齐双击语义待评估 |
+| 新建会话 | ✅ | |
+| 切换会话 | ⚠️ 现场「标签变、内容不变」 | 自动化未复现：Ctrl+Tab / 鼠标点标签 / Ctrl+X 数字三条路径均新增渲染断言测试且通过。怀疑现场为偶发（脏标记/合批）或操作时仍在 busy。保留观察 |
+| cargo 分类 | ✅ | 新增回归：`cargo --version` / `cargo build` / `rustc --version` 必须 Risky |
+
+新增防护测试：3 个切换渲染断言（键盘/鼠标/leader）+ bash 风险分类 3 条。版本 → 0.5.7。
 
 ### 自 M4 延后的可选项（评估，不默认纳入 M5）
 

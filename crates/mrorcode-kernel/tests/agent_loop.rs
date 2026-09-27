@@ -12,7 +12,8 @@ use mrorcode_kernel::message::ToolCall;
 use mrorcode_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use mrorcode_kernel::provider::{ChatOptions, LlmProvider, ProviderResult, StreamEvent};
 use mrorcode_kernel::testkit::{
-    drain_until_terminal, single_tool_call_script, text_script, EchoTool, ScriptedProvider,
+    assert_event_types, drain_until_terminal, single_tool_call_script, text_script, EchoTool,
+    ScriptedProvider,
 };
 use mrorcode_kernel::tool::{RiskLevel, Tool, ToolContext, ToolRegistry, ToolResult};
 use mrorcode_kernel::{AgentBuilder, AgentCommand};
@@ -573,4 +574,117 @@ async fn plan_mode_allows_safe_tools() {
         })
         .expect("big result");
     assert!(!result.contains("plan mode"));
+}
+
+// ---------------- conformance 套件（M5-d） ----------------
+// 标准场景的事件类型序列断言：对任意 provider 实现（OpenAI 兼容 / Anthropic），
+// agent 循环消费 StreamEvent 后产出的 AgentEvent 序列语义一致。
+
+#[tokio::test]
+async fn conformance_plain_chat_event_sequence() {
+    let provider = ScriptedProvider::new(vec![text_script("hello")]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(registry_with_echo())
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "hi".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    assert_event_types(&events, &["TurnStarted", "TextDelta", "TurnComplete"]);
+}
+
+#[tokio::test]
+async fn conformance_tool_call_event_sequence() {
+    let provider = ScriptedProvider::new(vec![
+        single_tool_call_script("let me check", "c1", "echo", json!({"text": "hi"})),
+        text_script("done"),
+    ]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(registry_with_echo())
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "use echo".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    // TurnStarted → (文本) → ToolStarted → ToolResult → (收尾文本) → TurnComplete
+    assert_event_types(
+        &events,
+        &[
+            "TurnStarted",
+            "TextDelta",
+            "ToolStarted",
+            "ToolResult",
+            "TextDelta",
+            "TurnComplete",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn conformance_error_event_sequence() {
+    use mrorcode_kernel::provider::ProviderError;
+    use mrorcode_kernel::StreamEvent;
+
+    // 发出一个可恢复错误后不再产出（模拟 provider 失败）
+    struct ErrorProvider;
+    #[async_trait]
+    impl LlmProvider for ErrorProvider {
+        fn model_name(&self) -> &str {
+            "err"
+        }
+        fn chat_stream<'a>(
+            &'a self,
+            _messages: &'a [mrorcode_kernel::Message],
+            _tools: &'a [mrorcode_kernel::ToolDef],
+            _options: &'a ChatOptions,
+            _cancel: &'a tokio_util::sync::CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = ProviderResult<BoxStream<'a, StreamEvent>>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Ok(
+                    Box::pin(futures::stream::iter([StreamEvent::Error(ProviderError {
+                        message: "boom".into(),
+                        retryable: false,
+                        http_status: None,
+                        code: None,
+                    })])) as BoxStream<'a, StreamEvent>,
+                )
+            })
+        }
+    }
+
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(ErrorProvider))
+        .tools(registry_with_echo())
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "go".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    assert_event_types(&events, &["TurnStarted", "Error", "TurnComplete"]);
 }

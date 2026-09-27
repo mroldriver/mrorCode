@@ -235,52 +235,87 @@ impl Config {
 
     /// 校验并解析为可装配的 provider。本地端点允许空 api_key。
     pub fn resolve(&self) -> Result<ResolvedProvider, ConfigError> {
-        let (name, cfg) = self
-            .active_provider()
+        let name = self
+            .default_provider
+            .clone()
+            .or_else(|| self.providers.keys().next().cloned())
             .ok_or_else(|| ConfigError::NoProvider {
                 path: Self::config_path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "~/.mrorcode/config.toml".to_string()),
             })?;
-        let provider_type = cfg
-            .provider_type
-            .clone()
-            .unwrap_or_else(|| "openai_compat".to_string());
-        match provider_type.as_str() {
-            "openai_compat" | "anthropic" => {}
-            other => return Err(ConfigError::UnknownProviderType(other.to_string())),
-        }
-        let base_url = cfg
-            .base_url
-            .clone()
-            .ok_or_else(|| ConfigError::MissingField {
-                name: name.to_string(),
-                field: "base_url",
+        let cfg = self
+            .providers
+            .get(&name)
+            .ok_or_else(|| ConfigError::NoProvider {
+                path: Self::config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "~/.mrorcode/config.toml".to_string()),
             })?;
-        let model = self
-            .default_model
-            .clone()
-            .or_else(|| cfg.model.clone())
-            .ok_or_else(|| ConfigError::MissingField {
-                name: name.to_string(),
-                field: "model",
-            })?;
-        let mut models: Vec<String> = Vec::new();
-        for m in std::iter::once(model.clone()).chain(cfg.models.iter().cloned()) {
-            if !models.contains(&m) {
-                models.push(m);
-            }
-        }
-        Ok(ResolvedProvider {
-            name: name.to_string(),
-            provider_type,
-            base_url,
-            api_key: cfg.api_key.clone().unwrap_or_default(),
-            model,
-            context_window: cfg.context_window.unwrap_or(128_000),
-            models,
-        })
+        // 默认解析：顶层 default_model 可覆盖条目模型。
+        let model_override = self.default_model.clone();
+        resolve_entry(&name, cfg, model_override)
     }
+
+    /// 按条目名解析指定 provider（运行中切换用，M5-e）。
+    ///
+    /// 与 `resolve()` 的区别：不看 `default_provider`，且顶层 `default_model`
+    /// 不跨条目生效（只用该条目自己的 model）。
+    pub fn resolve_named(&self, name: &str) -> Result<ResolvedProvider, ConfigError> {
+        let cfg = self
+            .providers
+            .get(name)
+            .ok_or_else(|| ConfigError::NoProvider {
+                path: Self::config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "~/.mrorcode/config.toml".to_string()),
+            })?;
+        resolve_entry(name, cfg, None)
+    }
+}
+
+/// 单个 provider 条目的校验与解析；`model_override` 为顶层 default_model（仅默认解析时传入）。
+fn resolve_entry(
+    name: &str,
+    cfg: &ProviderConfig,
+    model_override: Option<String>,
+) -> Result<ResolvedProvider, ConfigError> {
+    let provider_type = cfg
+        .provider_type
+        .clone()
+        .unwrap_or_else(|| "openai_compat".to_string());
+    match provider_type.as_str() {
+        "openai_compat" | "anthropic" => {}
+        other => return Err(ConfigError::UnknownProviderType(other.to_string())),
+    }
+    let base_url = cfg
+        .base_url
+        .clone()
+        .ok_or_else(|| ConfigError::MissingField {
+            name: name.to_string(),
+            field: "base_url",
+        })?;
+    let model = model_override
+        .or_else(|| cfg.model.clone())
+        .ok_or_else(|| ConfigError::MissingField {
+            name: name.to_string(),
+            field: "model",
+        })?;
+    let mut models: Vec<String> = Vec::new();
+    for m in std::iter::once(model.clone()).chain(cfg.models.iter().cloned()) {
+        if !models.contains(&m) {
+            models.push(m);
+        }
+    }
+    Ok(ResolvedProvider {
+        name: name.to_string(),
+        provider_type,
+        base_url,
+        api_key: cfg.api_key.clone().unwrap_or_default(),
+        model,
+        context_window: cfg.context_window.unwrap_or(128_000),
+        models,
+    })
 }
 
 #[cfg(test)]
@@ -409,6 +444,61 @@ threshold_tokens = 0
         .unwrap();
         assert_eq!(cfg.compaction.keep_recent, 3);
         assert_eq!(cfg.compaction.threshold_tokens, 0);
+    }
+
+    #[test]
+    fn resolve_named_picks_non_default_entry() {
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "a".into(),
+            ProviderConfig {
+                base_url: Some("https://a.example/v1".into()),
+                api_key: None,
+                model: Some("ma".into()),
+                ..Default::default()
+            },
+        );
+        cfg.providers.insert(
+            "b".into(),
+            ProviderConfig {
+                provider_type: Some("anthropic".into()),
+                base_url: Some("https://api.anthropic.com".into()),
+                api_key: Some("k".into()),
+                model: Some("mb".into()),
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = Some("a".into());
+        // 默认解析为 a；按名解析得到 b
+        assert_eq!(cfg.resolve().unwrap().name, "a");
+        let named = cfg.resolve_named("b").unwrap();
+        assert_eq!(named.name, "b");
+        assert_eq!(named.provider_type, "anthropic");
+        assert_eq!(named.model, "mb");
+        // 未知条目报错
+        assert!(matches!(
+            cfg.resolve_named("nope"),
+            Err(ConfigError::NoProvider { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_named_ignores_top_level_default_model() {
+        let mut cfg = Config {
+            default_model: Some("top-model".into()),
+            ..Default::default()
+        };
+        cfg.providers.insert(
+            "p".into(),
+            ProviderConfig {
+                base_url: Some("https://x/v1".into()),
+                model: Some("entry-model".into()),
+                ..Default::default()
+            },
+        );
+        // 默认解析受 default_model 影响；按名解析只用条目模型
+        assert_eq!(cfg.resolve().unwrap().model, "top-model");
+        assert_eq!(cfg.resolve_named("p").unwrap().model, "entry-model");
     }
 
     #[test]

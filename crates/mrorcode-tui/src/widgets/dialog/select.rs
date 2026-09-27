@@ -26,6 +26,8 @@ pub enum SelectPurpose {
     Command,
     /// 回退到某轮之前（M4-9）。
     Rewind,
+    /// 跨 provider 切换（M5-e）。
+    Provider,
 }
 
 #[derive(Clone, Debug)]

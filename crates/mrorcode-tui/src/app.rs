@@ -23,7 +23,7 @@ use std::pin::Pin;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{Interval, Sleep};
 
-use mrorcode_agent::{Assembly, RuntimeEvent};
+use mrorcode_agent::{AssembleOptions, Assembly, RuntimeEvent};
 
 use crate::commands::{self, AppCommand};
 use crate::store::{AppState, Route};
@@ -34,6 +34,10 @@ use crate::widgets::{home, permission, prompt, session, sidebar, tabs, toast};
 
 const RENDER_COALESCE: Duration = Duration::from_millis(8);
 const SPINNER_TICK: Duration = Duration::from_millis(100);
+/// 输入光标亮/灭半周期（应用层驱动闪烁）。
+const CURSOR_BLINK_TICK: Duration = Duration::from_millis(600);
+/// 关停旧 runtime 时等待 Exited 的兜底超时。
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 输入线程 → 主循环的统一输入事件（M4：键/鼠标/粘贴分流）。
 #[derive(Clone, Debug)]
@@ -45,10 +49,16 @@ pub enum InputEvent {
 }
 
 /// TUI 入口。`resume` 为要恢复的会话 id（来自 `--resume`）。
-pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> {
+pub async fn run(
+    assembly: Assembly,
+    resume: Option<u64>,
+    config: mrorcode_config::Config,
+    options: AssembleOptions,
+) -> anyhow::Result<()> {
     let Assembly {
-        handle,
+        mut handle,
         mut events,
+        provider_name,
         model,
         available_models,
         ..
@@ -67,6 +77,7 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
     // 若与 config 默认模型不同，补发 SetModel（kernel 下一轮生效）
     let assembly_model = model.clone();
     let mut state = AppState::new(model, available_models, working_dir.clone(), kv);
+    state.attach_config(config, options, provider_name);
     if state.model != assembly_model {
         let m = state.model.clone();
         handle.set_model(m.clone());
@@ -89,16 +100,25 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
 
     let mut render_due: Option<Pin<Box<Sleep>>> = None;
     let mut spinner: Option<Interval> = None;
+    let mut blinker: Option<Interval> = None;
     let mut dirty = true; // 首帧必画
 
     let result: io::Result<()> = loop {
-        ensure_wake(&mut spinner, &state);
+        // 待执行的 provider 切换：在事件循环顶部统一处理（M5-e）。
+        if state.pending_provider_switch.is_some() {
+            apply_provider_switch(&mut state, &mut handle, &mut events).await;
+            dirty = true;
+        }
+        ensure_wake(&mut spinner, &mut blinker, &mut state);
         tokio::select! {
             biased;
 
             maybe_input = input_rx.recv() => {
                 match maybe_input {
                     Some(input) => {
+                        if prompt_focused(&state) {
+                            reset_cursor_blink(&mut blinker, &mut state);
+                        }
                         if on_input(&mut state, &input, &handle) {
                             dirty = true;
                         }
@@ -137,6 +157,18 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
             }
 
             _ = async {
+                if let Some(b) = blinker.as_mut() {
+                    b.tick().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if blinker.is_some() => {
+                // 只翻转标志；光标样式在下一帧 draw 中统一同步
+                state.cursor_blink_on = !state.cursor_blink_on;
+                dirty = true;
+            }
+
+            _ = async {
                 if let Some(s) = render_due.as_mut() {
                     s.as_mut().await;
                 } else {
@@ -166,6 +198,96 @@ pub async fn run(assembly: Assembly, resume: Option<u64>) -> anyhow::Result<()> 
     handle.shutdown();
     result?;
     Ok(())
+}
+
+// ---------------- provider 切换（M5-e） ----------------
+
+/// 执行待处理的 provider 切换。
+///
+/// 顺序：先构建新 Assembly（失败则旧 runtime 原样保留）→ 关停旧的 →
+/// 替换句柄 → resume 当前会话。busy 时拒绝切换。
+async fn apply_provider_switch(
+    state: &mut AppState,
+    handle: &mut mrorcode_agent::RuntimeHandle,
+    events: &mut UnboundedReceiver<RuntimeEvent>,
+) {
+    let Some(target) = state.pending_provider_switch.take() else {
+        return;
+    };
+    if state.phase.is_busy() {
+        state.toast_warn("请等当前任务结束后再切换 provider");
+        return;
+    }
+    if target == state.current_provider {
+        return;
+    }
+
+    // 先把当前会话落盘（保证 snapshot 最新），并取出会话体。
+    state.persist_active_session();
+    let session_id = state.active_session;
+    let conversation = state.active_conversation();
+
+    // 1) 先构建新 runtime；失败时旧 runtime 原样保留。
+    let new_assembly = mrorcode_agent::rebuild_assembly(
+        &state.config,
+        &target,
+        state.working_dir.clone(),
+        &state.assemble_options,
+    )
+    .await;
+    let Assembly {
+        handle: new_handle,
+        events: new_events,
+        provider_name,
+        model: new_model,
+        available_models: new_available,
+        ..
+    } = match new_assembly {
+        Ok(a) => a,
+        Err(e) => {
+            state.toast_error(format!("切换失败（仍用原 provider）：{e}"));
+            return;
+        }
+    };
+
+    // 2) 关停旧 runtime 并排空事件直到 Exited（带超时兜底）。
+    handle.shutdown();
+    drain_until_exited(events).await;
+
+    // 3) 替换句柄。
+    *handle = new_handle;
+    *events = new_events;
+
+    // 4) 恢复当前会话体到新 runtime。
+    handle.resume(session_id, conversation);
+
+    // 5) 更新投影；plan 模式需重新下发给新 kernel。
+    state.note_provider_switched(provider_name.clone(), new_model.clone(), new_available);
+    if state.plan_mode {
+        handle.set_plan_mode(true);
+    }
+    prompt::style_textarea(state, &state.theme.clone());
+    state.toast(format!(
+        "已切换 provider：{provider_name} · 模型 {new_model}"
+    ));
+}
+
+/// 排空旧 runtime 事件直到 Exited / 通道关闭；超时也返回（旧句柄将被替换）。
+async fn drain_until_exited(events: &mut UnboundedReceiver<RuntimeEvent>) {
+    let deadline = tokio::time::sleep(SHUTDOWN_TIMEOUT);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            biased;
+            ev = events.recv() => {
+                match ev {
+                    Some(RuntimeEvent::Exited) | None => return,
+                    Some(_) => continue,
+                }
+            }
+            _ = &mut deadline => return,
+        }
+    }
 }
 
 // ---------------- 输入 ----------------
@@ -477,8 +599,6 @@ fn apply_action(
                     state.esc_first = Some(now);
                     state.toast("再按一次 Esc 中断");
                 }
-            } else {
-                state.should_quit = true;
             }
             true
         }
@@ -584,6 +704,16 @@ fn apply_action(
             handle.cancel();
             true
         }
+        SwitchProvider => {
+            if !state.open_provider_picker() {
+                if state.phase.is_busy() {
+                    state.open_alert("switch provider", "请等当前任务结束后再切换");
+                } else {
+                    state.open_alert("switch provider", "配置中只有一个 provider，无需切换");
+                }
+            }
+            true
+        }
     }
 }
 
@@ -630,6 +760,11 @@ fn apply_select(
         SelectPurpose::Rewind => {
             if let Ok(keep) = value.parse::<usize>() {
                 state.rewind_to(keep, handle);
+            }
+        }
+        SelectPurpose::Provider => {
+            if value != state.current_provider {
+                state.pending_provider_switch = Some(value);
             }
         }
     }
@@ -685,6 +820,15 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
             }
         }
         AppCommand::OpenHelp => state.open_help(),
+        AppCommand::SwitchProvider => {
+            if !state.open_provider_picker() {
+                if state.phase.is_busy() {
+                    state.open_alert("switch provider", "请等当前任务结束后再切换");
+                } else {
+                    state.open_alert("switch provider", "配置中只有一个 provider，无需切换");
+                }
+            }
+        }
     }
 }
 
@@ -741,15 +885,46 @@ fn restore_into_prompt(state: &mut AppState, text: String) {
 
 // ---------------- 节拍 ----------------
 
-fn ensure_wake(spinner: &mut Option<Interval>, state: &AppState) {
+fn ensure_wake(
+    spinner: &mut Option<Interval>,
+    blinker: &mut Option<Interval>,
+    state: &mut AppState,
+) {
     // busy 时驱动 spinner；有 toast 时也需要节拍让其按时消失（空闲无 toast 时 0 唤醒）
-    let needed = state.phase.is_busy() || state.has_active_toasts();
-    match (needed, spinner.is_some()) {
+    let spinner_needed = state.phase.is_busy() || state.has_active_toasts();
+    match (spinner_needed, spinner.is_some()) {
         (true, false) => {
             *spinner = Some(tokio::time::interval(SPINNER_TICK));
         }
         (false, true) => *spinner = None,
         _ => {}
+    }
+
+    // 输入光标常闪：仅在输入框可编辑（无审批弹窗/对话框/选择模式）时驱动
+    let blink_needed = prompt_focused(state);
+    match (blink_needed, blinker.is_some()) {
+        (true, false) => {
+            // 亮帧起步，首个 tick 延后一个半周期（避免 interval 立即 tick 把光标立刻灭掉）
+            state.cursor_blink_on = true;
+            let first = tokio::time::Instant::now() + CURSOR_BLINK_TICK;
+            *blinker = Some(tokio::time::interval_at(first, CURSOR_BLINK_TICK));
+        }
+        (false, true) => *blinker = None,
+        _ => {}
+    }
+}
+
+/// 输入框当前是否处于可编辑态（光标只在此时闪烁）。
+fn prompt_focused(state: &AppState) -> bool {
+    state.permission.is_none() && state.dialogs.is_empty() && !state.select_mode
+}
+
+/// 任意输入都让光标回到亮帧并重新计时（连续输入时不熄灭）。
+fn reset_cursor_blink(blinker: &mut Option<Interval>, state: &mut AppState) {
+    state.cursor_blink_on = true;
+    if let Some(interval) = blinker.as_mut() {
+        // reset()：下次到期 = 现在 + 一个半周期
+        interval.reset();
     }
 }
 
@@ -758,6 +933,8 @@ fn ensure_wake(spinner: &mut Option<Interval>, state: &AppState) {
 fn draw(f: &mut Frame<'_>, state: &mut AppState) {
     // 每帧一次浅克隆（~50 个 Color，栈分配），避免与 state 的可变借用冲突
     let theme = state.theme.clone();
+    // 每帧按当前闪烁态/主题同步光标样式（覆盖主题切换等外部改动）
+    prompt::sync_cursor_style(state, &theme);
     state.hit_regions.clear();
     let area = f.area();
     // 整屏背景
@@ -846,7 +1023,7 @@ fn draw_session(
         height: area.height,
     };
 
-    let prompt_h = prompt::max_height(area.height) + 2;
+    let prompt_h = prompt::content_height(state, area.height) + 2;
     let show_tabs = state.show_tabs && area.height > 6;
     let tab_h = if show_tabs { tabs::HEIGHT } else { 0 };
     let chunks = Layout::default()
@@ -1040,15 +1217,20 @@ mod tests {
     async fn idle_has_no_spinner_timer() {
         let mut state = test_state();
         let mut spinner: Option<tokio::time::Interval> = None;
-        ensure_wake(&mut spinner, &state);
-        assert!(spinner.is_none(), "idle loop must arm no timer (0 wakeups)");
+        let mut blinker: Option<tokio::time::Interval> = None;
+        ensure_wake(&mut spinner, &mut blinker, &mut state);
+        assert!(
+            spinner.is_none(),
+            "idle loop must arm no spinner (0 spinner wakeups)"
+        );
+        assert!(blinker.is_some(), "idle prompt still blinks its cursor");
 
         state.phase = Phase::Working;
-        ensure_wake(&mut spinner, &state);
+        ensure_wake(&mut spinner, &mut blinker, &mut state);
         assert!(spinner.is_some(), "busy state arms 100ms spinner");
 
         state.phase = Phase::Idle;
-        ensure_wake(&mut spinner, &state);
+        ensure_wake(&mut spinner, &mut blinker, &mut state);
         assert!(spinner.is_none(), "spinner must stop when idle again");
     }
 
@@ -1057,7 +1239,8 @@ mod tests {
         let mut state = test_state();
         state.toast("hi");
         let mut spinner: Option<tokio::time::Interval> = None;
-        ensure_wake(&mut spinner, &state);
+        let mut blinker: Option<tokio::time::Interval> = None;
+        ensure_wake(&mut spinner, &mut blinker, &mut state);
         assert!(spinner.is_some(), "active toast arms the wake interval");
         state.gc_toasts();
         assert_eq!(state.active_toasts().count(), 1);
@@ -1067,7 +1250,7 @@ mod tests {
             *t = std::time::Instant::now() - Duration::from_secs(4);
         }
         state.gc_toasts();
-        ensure_wake(&mut spinner, &state);
+        ensure_wake(&mut spinner, &mut blinker, &mut state);
         assert!(spinner.is_none(), "no timer after toasts expire");
     }
 
@@ -1377,6 +1560,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ctrl_tab_switch_updates_rendered_message_content() {
+        use crate::store::MessageView;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+
+        state.route = Route::Session;
+        state
+            .messages
+            .push(MessageView::user(1, "ALPHA内容".into()));
+        state.sessions[0].title = "alpha".into();
+        state.new_session();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(2, "BETA内容".into()));
+        state.sessions[1].title = "beta".into();
+        // 当前在会话 2：屏幕应有 BETA
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "BETA"));
+
+        // Ctrl+Tab 切到会话 1：屏幕必须变为 ALPHA
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert_eq!(state.active_session, 1);
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(
+            buffer_contains(&term, "ALPHA"),
+            "switched view must render ALPHA"
+        );
+        assert!(
+            !buffer_contains(&term, "BETA"),
+            "old BETA content must be cleared"
+        );
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn mouse_click_tab_switch_updates_rendered_content() {
+        use crate::store::MessageView;
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+
+        state.route = Route::Session;
+        state
+            .messages
+            .push(MessageView::user(1, "ALPHA内容".into()));
+        state.sessions[0].title = "alpha".into();
+        state.new_session();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(2, "BETA内容".into()));
+        state.sessions[1].title = "beta".into();
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "BETA"));
+
+        // 找到会话 1 标签的命中坐标，模拟鼠标点击
+        let hit = state
+            .tab_hits
+            .iter()
+            .find(|h| h.session_id == 1)
+            .expect("tab hit for session 1");
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: hit.rect.x,
+            row: hit.rect.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(on_mouse(&mut state, &click, &handle));
+        assert_eq!(state.active_session, 1);
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(
+            buffer_contains(&term, "ALPHA"),
+            "clicked tab must render ALPHA"
+        );
+        assert!(!buffer_contains(&term, "BETA"));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn leader_number_switch_updates_rendered_content() {
+        use crate::store::MessageView;
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+
+        state.route = Route::Session;
+        state
+            .messages
+            .push(MessageView::user(1, "ALPHA内容".into()));
+        state.sessions[0].title = "alpha".into();
+        state.new_session();
+        state.route = Route::Session;
+        state.messages.push(MessageView::user(2, "BETA内容".into()));
+        state.sessions[1].title = "beta".into();
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "BETA"));
+
+        // Ctrl+X 然后 1：切到会话 1
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        on_key(&mut state, &k(KeyCode::Char('1')), &handle);
+        assert_eq!(state.active_session, 1);
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(
+            buffer_contains(&term, "ALPHA"),
+            "leader switch must render ALPHA"
+        );
+        assert!(!buffer_contains(&term, "BETA"));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
     async fn session_picker_switches_and_delete_confirm_removes() {
         use crate::store::MessageView;
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("r")]));
@@ -1504,9 +1805,9 @@ mod tests {
         assert_eq!(state.theme_name, "nord");
         assert_eq!(state.kv.data.theme.as_deref(), Some("nord"));
 
-        // Esc 在无对话框时回到 base 层行为（idle 直接退出）
+        // Esc 在无对话框空闲时不再退出（避免误触），仅被吞掉
         on_key(&mut state, &k(KeyCode::Esc), &handle);
-        assert!(state.should_quit);
+        assert!(!state.should_quit);
         handle.shutdown();
     }
 
@@ -1752,5 +2053,147 @@ mod tests {
         // 文本原样保留，等待继续编辑
         assert_eq!(state.prompt.lines().join(""), "/he");
         handle.shutdown();
+    }
+
+    // ---- 跨 provider 切换（M5-e） ----
+
+    fn two_provider_config() -> mrorcode_config::Config {
+        use mrorcode_config::{Config, ProviderConfig};
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "a".into(),
+            ProviderConfig {
+                base_url: Some("https://a.example.com/v1".into()),
+                model: Some("ma".into()),
+                ..Default::default()
+            },
+        );
+        cfg.providers.insert(
+            "b".into(),
+            ProviderConfig {
+                provider_type: Some("anthropic".into()),
+                base_url: Some("https://api.anthropic.com".into()),
+                api_key: Some("k".into()),
+                model: Some("mb".into()),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[tokio::test]
+    async fn provider_picker_arms_pending_switch() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.attach_config(
+            two_provider_config(),
+            AssembleOptions::default(),
+            "a".into(),
+        );
+
+        // leader s 打开 provider 选择器
+        on_key(
+            &mut state,
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &handle,
+        );
+        assert!(on_key(&mut state, &k(KeyCode::Char('s')), &handle));
+        assert_eq!(state.dialogs.len(), 1);
+
+        // 名称排序后 a 在前、b 在后；下移选 b 并确认 → pending 置位
+        on_key(&mut state, &k(KeyCode::Down), &handle);
+        on_key(&mut state, &k(KeyCode::Enter), &handle);
+        assert!(state.dialogs.is_empty());
+        assert_eq!(state.pending_provider_switch.as_deref(), Some("b"));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn provider_picker_blocked_while_busy() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.attach_config(
+            two_provider_config(),
+            AssembleOptions::default(),
+            "a".into(),
+        );
+        state.phase = Phase::Working;
+        assert!(!state.open_provider_picker());
+        assert!(state.dialogs.is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn provider_switch_replaces_runtime_and_resumes_session() {
+        let (mut handle, mut events) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.attach_config(
+            two_provider_config(),
+            AssembleOptions::default(),
+            "a".into(),
+        );
+
+        state.pending_provider_switch = Some("b".to_string());
+        apply_provider_switch(&mut state, &mut handle, &mut events).await;
+
+        // 切换后投影更新为 b / mb
+        assert_eq!(state.current_provider, "b");
+        assert_eq!(state.model, "mb");
+        assert_eq!(state.available_models, vec!["mb"]);
+        assert!(state.pending_provider_switch.is_none());
+        // 新 runtime 替换成功：新事件通道存活且无残留事件
+        match tokio::time::timeout(Duration::from_millis(50), events.recv()).await {
+            Err(_) => {}
+            Ok(ev) => panic!("unexpected event on new runtime: {ev:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_switch_failure_keeps_old_runtime() {
+        use mrorcode_config::{Config, ProviderConfig};
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "a".into(),
+            ProviderConfig {
+                base_url: Some("https://a.example.com/v1".into()),
+                model: Some("ma".into()),
+                ..Default::default()
+            },
+        );
+        // c 缺 base_url：resolve_named 失败
+        cfg.providers.insert(
+            "c".into(),
+            ProviderConfig {
+                model: Some("mc".into()),
+                ..Default::default()
+            },
+        );
+
+        let (handle, mut events) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.attach_config(cfg, AssembleOptions::default(), "a".into());
+
+        apply_provider_switch_inner(&mut state, &handle, &mut events, "c").await;
+
+        // 切换失败：provider 仍是 a，旧 runtime 事件通道仍存活
+        assert_eq!(state.current_provider, "a");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), events.recv())
+                .await
+                .is_err()
+        );
+        handle.shutdown();
+    }
+
+    /// 直接置位 pending 并执行切换（复用正式流程）。
+    async fn apply_provider_switch_inner(
+        state: &mut AppState,
+        handle: &RuntimeHandle,
+        events: &mut UnboundedReceiver<RuntimeEvent>,
+        target: &str,
+    ) {
+        state.pending_provider_switch = Some(target.to_string());
+        let mut h = handle.clone();
+        apply_provider_switch(state, &mut h, events).await;
     }
 }

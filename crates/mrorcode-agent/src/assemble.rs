@@ -19,6 +19,8 @@ use crate::runtime::{start, RuntimeEvent, RuntimeHandle, RuntimeStart};
 pub struct Assembly {
     pub handle: RuntimeHandle,
     pub events: tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
+    /// 当前 provider 条目名（M5-e 切换用）。
+    pub provider_name: String,
     pub model: String,
     /// 同 provider 下可切换模型（含当前 model）。
     pub available_models: Vec<String>,
@@ -77,6 +79,20 @@ pub async fn assemble(
         assembly.warnings = boot.warnings.clone();
     }
     Ok(assembly)
+}
+
+/// 按条目名重新装配一个 runtime（运行中跨 provider 切换用，M5-e）。
+///
+/// 仅解析并构建新 Assembly，**不关停旧 runtime**：调用方先确认本函数成功，
+/// 再关停旧的并替换句柄（构建失败时旧 runtime 原样保留）。
+pub async fn rebuild_assembly(
+    config: &mrorcode_config::Config,
+    target: &str,
+    working_dir: PathBuf,
+    options: &AssembleOptions,
+) -> anyhow::Result<Assembly> {
+    let resolved = config.resolve_named(target)?;
+    assemble(&resolved, working_dir, options, None, &config.mcp.servers).await
 }
 
 fn assemble_inner(
@@ -145,6 +161,7 @@ fn assemble_inner(
     Ok(Assembly {
         handle,
         events,
+        provider_name: resolved.name.clone(),
         model,
         available_models: resolved.models.clone(),
         mcp,

@@ -15,7 +15,7 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
         Constraint::Fill(1),
         Constraint::Length(3), // logo
         Constraint::Length(1),
-        Constraint::Max(6), // prompt
+        Constraint::Max(8), // prompt（随内容 1→封顶 行）
         Constraint::Length(2),
         Constraint::Fill(1),
     ])
@@ -37,13 +37,16 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
     Paragraph::new(logo).centered().render(body[1], buf);
 
     let pw = 75u16.min(((area.width as f32 * 0.7) as u16).max(40));
-    let ph = prompt::max_height(area.height) + 2;
-    let [prompt_area] = Layout::horizontal([Constraint::Length(pw)])
+    let ph = prompt::content_height(state, area.height) + 2;
+    let [slot] = Layout::horizontal([Constraint::Length(pw)])
         .flex(Flex::Center)
         .areas(body[3]);
+    // 输入区只有几行时在预留槽内垂直居中，避免整块悬在槽顶部
+    let y_off = slot.height.saturating_sub(ph) / 2;
     let prompt_area = Rect {
-        height: ph.min(body[3].height + 2),
-        ..prompt_area
+        y: slot.y + y_off,
+        height: ph,
+        ..slot
     };
 
     prompt::render_prompt(state, prompt_area, buf, theme);

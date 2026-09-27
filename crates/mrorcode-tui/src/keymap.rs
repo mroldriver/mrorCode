@@ -89,6 +89,8 @@ pub enum Action {
     CopySelection,
     /// 回退会话到历史某轮之前（M4-9）。
     Rewind,
+    /// 跨 provider 切换（重建 runtime，M5-e）。
+    SwitchProvider,
 }
 
 impl Action {
@@ -125,6 +127,7 @@ impl Action {
             Action::ToggleSelect => "toggle_select",
             Action::CopySelection => "copy_selection",
             Action::Rewind => "rewind",
+            Action::SwitchProvider => "switch_provider",
         }
     }
 
@@ -158,6 +161,8 @@ impl Action {
             "prev_session" => Action::PrevSession,
             "toggle_select" => Action::ToggleSelect,
             "copy_selection" => Action::CopySelection,
+            "rewind" => Action::Rewind,
+            "switch_provider" => Action::SwitchProvider,
             _ => return None,
         })
     }
@@ -553,6 +558,7 @@ fn default_bindings() -> Vec<Binding> {
         leader(PressCode::Char(']')),
         leader(PressCode::Char('v')),
         leader(PressCode::Char('w')),
+        leader(PressCode::Char('s')),
     ];
     let leader_actions = [
         Action::OpenCommandPalette,
@@ -567,6 +573,7 @@ fn default_bindings() -> Vec<Binding> {
         Action::NextSession,
         Action::ToggleSelect,
         Action::Rewind,
+        Action::SwitchProvider,
     ];
 
     let mut all = plain;
