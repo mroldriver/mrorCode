@@ -9,6 +9,10 @@ rust-version.workspace = true
 name = "mrorcode"
 path = "src/main.rs"
 
+[lib]
+name = "mrorcode_cli"
+path = "src/lib.rs"
+
 [dependencies]
 mrorcode-kernel = { workspace = true }
 mrorcode-capabilities = { workspace = true }
@@ -22,3 +26,8 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+mrorcode-kernel = { workspace = true, features = ["test-support"] }
+mrorcode-agent = { workspace = true }
