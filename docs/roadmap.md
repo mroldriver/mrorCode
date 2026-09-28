@@ -1335,7 +1335,8 @@ server（filesystem）冒烟。
   - 已完成：`panic = "abort"` 写入 release profile（体积 7.9→7.0 MB，windows-gnu 兼容）；
     mimalloc 评估后否决（本机无完整 gcc，与 ring/rustls 同约束）。
   - 待 M5-a CI 就绪后：cargo-dist 三平台产物上传。
-- [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
+- [x] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
+  （2026-09-28 完成，282 测试全绿；实施记录见本文末「M5-d 实施记录」）
 - [ ] M5-e：跨 provider 切换有落地方案（轻量或 daemon，按设计文档结论）。
 - [x] M5-f：TUI 与 opencode 对标（键位语义 / plan 事件 / toast / which-key / 工具输出）。
   （2026-09-28 完成，258 测试全绿；差异清单见 `docs/todos/20260928-tui-parity-opencode-对标差异.md`）
@@ -1384,3 +1385,49 @@ server（filesystem）冒烟。
 循环、对标默认键位用例）、`cargo clippy --workspace --all-targets -- -D warnings` 零告警、
 `cargo fmt --check` 通过；`cargo bench -p mrorcode-tui --bench render` 帧相关基准无回归
 （`markdown/full_reparse_each_frame` 0.73ms、`windowed_frame/10000_msgs` 0.44ms）。
+
+---
+
+## M5-d 实施记录：headless JSONL 冻结 + conformance testkit（2026-09-28 完成）
+
+**目标**：冻结 `--json` 事件契约，并让两个 provider 跑同一套 conformance 断言。
+同时把测试暴露出来的两个真实缺陷修掉（其中 middleware 那条是安全问题）。
+
+**契约冻结**
+
+- `cli/headless.rs` 重构：输出逻辑集中到纯函数 `event_line()` / `run_finished_line()`，
+  新增 `Mode::{Plain, Json}` 与 `SCHEMA_VERSION = 1`；每行都带 `v` + `type`。
+- 事件类型共 11 种：`run.started` / `message.delta` / `reasoning.delta` / `tool.started` /
+  `tool.completed` / `usage` / `permission.denied` / `turn.completed` / `error` / `cancelled` /
+  `run.finished`。`run.finished` 恒为最后一行。
+- **终态语义**：只有 `turn.completed{stop_reason:"stopped"}` 是成功；`max_rounds` /
+  `provider_error` / `cancelled` 与错误均失败（退出码 1）。`error` 只是诊断行，不提前终止流，
+  否则会漏掉 `turn.completed`。`stop_reason` 用 `StopReason` 的 serde snake_case，
+  不用 Debug 字符串。
+- CLI 拆 lib + bin（`mrorcode_cli::headless`），使集成测试可直接驱动 headless。
+- 黄金基线 `tests/golden/headless-json.txt`（11 行，字节级 `include_str!` 比对），
+  配合 7 条字段级断言与 4 条集成测试（黄金 / 审批拒绝 / provider 错误 / plain 模式）。
+  **不引入 insta**：黄金文件 + `UPDATE_GOLDEN=1` 已足够，且避免新增依赖。
+
+**conformance 套件**
+
+- kernel `test-support` 新增 `stream_signature` / `assert_stream_sequence` /
+  `event_signature` / `assert_event_sequence`（签名忽略 usage 分片方式与 id 细节）。
+- `capabilities/tests/provider_conformance.rs` 用 wiremock 对同一份语义内容分别喂
+  OpenAI 兼容与 Anthropic：等价响应必须归一化成同一条非 usage 事件序列、usage 求和相等
+  （分片方式允许不同）、流错误都映射成 `StreamEvent::Error`、请求体语义一致。
+- 请求体的协议差异**不算漂移**，显式断言：anthropic 用 content block 数组并把 system
+  提到顶层，openai 用纯字符串且 system 是首条 message。
+
+**顺带修掉的两个真 bug**
+
+- **安全**：`agent::runtime::start()` 从未调用 `AgentBuilder::add_middleware`，审批中间件
+  形同虚设，Risky 工具在 TUI/headless 都会直接执行。已接线并加回归测试
+  （`middleware_is_wired_into_the_agent`；撤掉修复即失败）。
+- OpenAI 兼容流中途的 `{"error":{...}}` 会因解析不出 `choices` 被静默丢弃 → 整轮无输出却
+  以成功收场。现在映射为 `StreamEvent::Error`，retryable 判定与 Anthropic 的
+  `is_retryable` 对齐（限流/过载可恢复，参数类不可恢复）。另修 headless 的
+  `max_rounds` 错误状态码。
+
+**验证**：`cargo test --workspace` 282 测试全绿、`cargo clippy --workspace --all-targets
+-- -D warnings` 零告警、`cargo fmt --check` 通过（版本 0.5.6）。

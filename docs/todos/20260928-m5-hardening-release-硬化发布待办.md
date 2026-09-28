@@ -33,16 +33,20 @@ mimalloc 评估后否决（本机无完整 gcc，与 ring/rustls 同约束）。
 - [ ] 记录三平台 release 二进制体积基线（当前 windows-gnu 基线 ~7.0 MB）
 - [ ] 验收：三平台产物可直接执行 `mrorcode --version`，体积无异常膨胀
 
-## M5-d headless JSONL 稳定化 + conformance testkit — 未开工
+## M5-d headless JSONL 稳定化 + conformance testkit — 已完成（2026-09-28）
 
-现状：全仓无 insta / 快照测试 / conformance 相关代码。
+实施记录见 `docs/roadmap.md`「M5-d 实施记录」。按原计划不引入 insta，改用黄金文件
+（`UPDATE_GOLDEN=1` 显式刷新）。
 
-- [ ] 冻结 `cli/headless.rs` 的 `--json` 事件 schema
-      （`run.started/message.delta/tool.started/tool.completed/turn.completed/run.finished`）
-- [ ] 加 insta schema 快照测试防漂移
-- [ ] 扩展 kernel `test-support`：在 `ScriptedProvider` 上加「期望事件序列」断言器
-- [ ] OpenAI 兼容与 Anthropic 两个 provider 跑同一套 conformance 断言
-- [ ] 验收：改事件字段快照测试失败；conformance 套件双 provider 均绿
+- [x] 冻结 `cli/headless.rs` 的 `--json` 事件 schema（`SCHEMA_VERSION = 1`，11 种事件，
+      每行带 `v` + `type`，`run.finished` 恒末行）
+- [x] 加黄金文件 + 字段级快照防漂移（不引入 insta）
+- [x] 终态语义修正：仅 `turn.completed{stop_reason:"stopped"}` 成功；`error` 降为诊断行
+- [x] 扩展 kernel `test-support`：`stream_signature` / `assert_stream_sequence` /
+      `event_signature` / `assert_event_sequence`
+- [x] OpenAI 兼容与 Anthropic 两个 provider 跑同一套 conformance 断言
+- [x] 验收：改事件字段则黄金/字段测试失败；conformance 双 provider 均绿（282 测试全绿）
+- 顺带修：审批 middleware 未接线的安全问题；OpenAI 流中途 `{"error":{...}}` 被静默丢弃
 
 ## M5-e 跨 provider 切换 / daemon — 未开工
 
