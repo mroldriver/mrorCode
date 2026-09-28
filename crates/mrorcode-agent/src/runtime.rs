@@ -121,6 +121,11 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
         .system_prompt(start.system_prompt)
         .compaction(start.compaction)
         .working_dir(start.working_dir);
+    // 必须挂上中间件：审批（ApprovalMiddleware）走的就是这条链。
+    // 漏挂会让 Risky 工具跳过审批直接执行（TUI 与 headless 同时失效）。
+    for mw in start.middleware {
+        builder = builder.add_middleware(mw);
+    }
     if let Some(model) = start.model {
         let options = mrorcode_kernel::ChatOptions {
             model: Some(model),
