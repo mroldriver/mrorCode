@@ -1,7 +1,6 @@
 //! 工具调用 inline 卡片（图标 + 摘要 + 状态色/spinner）。
 //!
-//! 长输出（>1 行）默认折叠为一行提示，Tab 聚焦、Enter 切换；
-//! 展开后最多展示 10 行，超出显示截断提示。
+//! 长输出（>1 行）默认折叠为一行提示；对齐 opencode：展开后显示全部输出（无行数上限）。
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -9,9 +8,6 @@ use ratatui::text::{Line, Span};
 use crate::render::str_width;
 use crate::store::{ToolStatus, ToolView};
 use crate::theme::Theme;
-
-/// 输出最多内联展示的行数。
-const MAX_OUTPUT_LINES: usize = 10;
 
 pub fn icon(name: &str) -> &'static str {
     match name {
@@ -107,7 +103,7 @@ pub fn extra_lines(
     let mut out: Vec<Line<'static>> = Vec::new();
     let color = output_color(tool, theme);
     let is_diff = crate::widgets::diff::looks_like_diff(text);
-    for l in text.lines().take(MAX_OUTPUT_LINES) {
+    for l in text.lines() {
         if is_diff {
             out.push(crate::widgets::diff::render_line(
                 &clip(l, width),
@@ -121,12 +117,6 @@ pub fn extra_lines(
                 Style::default().fg(color),
             )));
         }
-    }
-    if total > MAX_OUTPUT_LINES {
-        out.push(Line::from(Span::styled(
-            format!("   \u{2026} 共 {total} 行，仅显示前 {MAX_OUTPUT_LINES} 行"),
-            Style::default().fg(theme.text_muted),
-        )));
     }
     out.push(styled_hint("   \u{25BE} 收起（enter）", focused, theme)); // ▾
     out
@@ -149,9 +139,8 @@ pub fn extra_height(tool: &ToolView, expanded: bool) -> u16 {
     } else if total == 1 || !expanded {
         1
     } else {
-        let shown = total.min(MAX_OUTPUT_LINES) as u16;
-        let truncated = u16::from(total > MAX_OUTPUT_LINES);
-        shown + truncated + 1
+        // 全部输出 + 收起提示（行数无上限，需防 u16 溢出，超出部分由 ratatui 裁剪）
+        u16::try_from(total.saturating_add(1)).unwrap_or(u16::MAX)
     }
 }
 
@@ -222,15 +211,24 @@ mod tests {
     }
 
     #[test]
-    fn expanded_caps_at_ten_with_truncation_note() {
-        let raw = (0..12)
+    fn expanded_shows_all_lines_no_cap() {
+        let raw = (0..20)
             .map(|i| format!("l{i}"))
             .collect::<Vec<_>>()
             .join("\n");
         let t = tool(&raw);
         let lines = extra_lines(&t, true, false, 100, &Theme::tokyonight());
-        // 10 行 + 截断提示 + 收起提示
-        assert_eq!(lines.len(), 12);
-        assert_eq!(extra_height(&t, true), 12);
+        // 20 输出 + 收起提示（无截断）
+        assert_eq!(lines.len(), 21);
+        assert_eq!(extra_height(&t, true), 21);
+    }
+
+    #[test]
+    fn extra_height_saturates_on_huge_output() {
+        // 超过 u16::MAX 行时不得回绕成小高度
+        let mut t = tool("x");
+        t.output = "x\n".repeat(70_000);
+        let h = extra_height(&t, true);
+        assert_eq!(h, u16::MAX);
     }
 }

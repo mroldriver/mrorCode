@@ -2,12 +2,11 @@
 
 #![allow(clippy::large_enum_variant)]
 
-mod headless;
-
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use mrorcode_agent::AssembleOptions;
+use mrorcode_cli::headless;
 use mrorcode_config::Config;
 
 #[derive(Parser, Debug)]

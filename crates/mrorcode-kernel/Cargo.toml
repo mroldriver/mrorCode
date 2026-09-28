@@ -23,6 +23,8 @@ test-support = []
 [dev-dependencies]
 criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# tests/ 用 testkit（序列断言器）
+mrorcode-kernel = { workspace = true, features = ["test-support"] }
 
 [[bench]]
 name = "compaction"

@@ -73,8 +73,24 @@ pub enum Action {
     FocusNextTool,
     FocusPrevTool,
     ToggleFocusedTool,
-    /// 切换 plan 模式（只读 gate）。
-    TogglePlanMode,
+    /// 在 agent（build/plan）间循环（对齐 opencode `tab` / `shift+tab`）。
+    CycleAgent,
+    CycleAgentReverse,
+    /// 在最近使用模型间循环（对齐 opencode `f2` / `shift+f2`）。
+    CycleModel,
+    CycleModelReverse,
+    /// 开关 which-key 面板 / 切换 dock-overlay 布局。
+    ToggleWhichKey,
+    ToggleWhichKeyLayout,
+    /// which-key 面板导航：分组、滚动、翻页、首尾（对齐 opencode 默认键位）。
+    WhichKeyGroupPrev,
+    WhichKeyGroupNext,
+    WhichKeyScrollUp,
+    WhichKeyScrollDown,
+    WhichKeyPageUp,
+    WhichKeyPageDown,
+    WhichKeyHome,
+    WhichKeyEnd,
     /// 展开/收起最近一条思考过程（M4-1）。
     ToggleReasoning,
     /// 打开当前聚焦工具卡的 diff viewer（M4-3）。
@@ -118,7 +134,20 @@ impl Action {
             Action::FocusNextTool => "tool_focus_next",
             Action::FocusPrevTool => "tool_focus_prev",
             Action::ToggleFocusedTool => "tool_toggle",
-            Action::TogglePlanMode => "toggle_plan_mode",
+            Action::CycleAgent => "cycle_agent",
+            Action::CycleAgentReverse => "cycle_agent_reverse",
+            Action::CycleModel => "cycle_model",
+            Action::CycleModelReverse => "cycle_model_reverse",
+            Action::ToggleWhichKey => "toggle_which_key",
+            Action::ToggleWhichKeyLayout => "toggle_which_key_layout",
+            Action::WhichKeyGroupPrev => "which_key_group_prev",
+            Action::WhichKeyGroupNext => "which_key_group_next",
+            Action::WhichKeyScrollUp => "which_key_scroll_up",
+            Action::WhichKeyScrollDown => "which_key_scroll_down",
+            Action::WhichKeyPageUp => "which_key_page_up",
+            Action::WhichKeyPageDown => "which_key_page_down",
+            Action::WhichKeyHome => "which_key_home",
+            Action::WhichKeyEnd => "which_key_end",
             Action::ToggleReasoning => "toggle_reasoning",
             Action::OpenDiffViewer => "open_diff",
             Action::ToggleTabs => "toggle_tabs",
@@ -153,7 +182,20 @@ impl Action {
             "tool_focus_next" => Action::FocusNextTool,
             "tool_focus_prev" => Action::FocusPrevTool,
             "tool_toggle" => Action::ToggleFocusedTool,
-            "toggle_plan_mode" => Action::TogglePlanMode,
+            "cycle_agent" => Action::CycleAgent,
+            "cycle_agent_reverse" => Action::CycleAgentReverse,
+            "cycle_model" => Action::CycleModel,
+            "cycle_model_reverse" => Action::CycleModelReverse,
+            "toggle_which_key" => Action::ToggleWhichKey,
+            "toggle_which_key_layout" => Action::ToggleWhichKeyLayout,
+            "which_key_group_prev" => Action::WhichKeyGroupPrev,
+            "which_key_group_next" => Action::WhichKeyGroupNext,
+            "which_key_scroll_up" => Action::WhichKeyScrollUp,
+            "which_key_scroll_down" => Action::WhichKeyScrollDown,
+            "which_key_page_up" => Action::WhichKeyPageUp,
+            "which_key_page_down" => Action::WhichKeyPageDown,
+            "which_key_home" => Action::WhichKeyHome,
+            "which_key_end" => Action::WhichKeyEnd,
             "toggle_reasoning" => Action::ToggleReasoning,
             "open_diff" => Action::OpenDiffViewer,
             "toggle_tabs" => Action::ToggleTabs,
@@ -450,6 +492,22 @@ fn default_bindings() -> Vec<Binding> {
     fn leader(code: PressCode) -> (bool, KeyPress) {
         (true, key(code))
     }
+    fn ctrl_alt(code: PressCode) -> KeyPress {
+        KeyPress {
+            code,
+            ctrl: true,
+            alt: true,
+            shift: false,
+        }
+    }
+    fn ctrl_alt_shift(code: PressCode) -> KeyPress {
+        KeyPress {
+            code,
+            ctrl: true,
+            alt: true,
+            shift: true,
+        }
+    }
 
     let plain = vec![
         b(false, key(PressCode::Enter), Action::Submit),
@@ -505,12 +563,68 @@ fn default_bindings() -> Vec<Binding> {
         ),
         b(false, ctrl(PressCode::Char('n')), Action::NewSession),
         b(false, ctrl(PressCode::Char('l')), Action::ListSessions),
-        b(false, key(PressCode::F(2)), Action::ToggleSidebar),
+        // 对齐 opencode：F2/Shift+F2 循环最近模型
+        b(false, key(PressCode::F(2)), Action::CycleModel),
+        b(
+            false,
+            KeyPress {
+                code: PressCode::F(2),
+                ctrl: false,
+                alt: false,
+                shift: true,
+            },
+            Action::CycleModelReverse,
+        ),
         b(false, key(PressCode::PageUp), Action::ScrollUp),
         b(false, key(PressCode::PageDown), Action::ScrollDown),
         b(false, key(PressCode::Up), Action::HistoryPrev),
         b(false, key(PressCode::Down), Action::HistoryNext),
-        b(false, key(PressCode::Tab), Action::FocusNextTool),
+        // 对齐 opencode：Tab/Shift+Tab 循环 agent（build/plan）
+        b(false, key(PressCode::Tab), Action::CycleAgent),
+        b(
+            false,
+            KeyPress {
+                code: PressCode::Tab,
+                ctrl: false,
+                alt: false,
+                shift: true,
+            },
+            Action::CycleAgentReverse,
+        ),
+        // 对齐 opencode：ctrl+alt+k 开关 which-key；加 shift 切布局
+        b(
+            false,
+            ctrl_alt(PressCode::Char('k')),
+            Action::ToggleWhichKey,
+        ),
+        b(
+            false,
+            ctrl_alt_shift(PressCode::Char('k')),
+            Action::ToggleWhichKeyLayout,
+        ),
+        // which-key 面板导航（对齐 opencode 默认键位）
+        b(false, ctrl_alt(PressCode::Left), Action::WhichKeyGroupPrev),
+        b(false, ctrl_alt(PressCode::Right), Action::WhichKeyGroupNext),
+        b(false, ctrl_alt(PressCode::Up), Action::WhichKeyScrollUp),
+        b(
+            false,
+            ctrl_alt(PressCode::Char('p')),
+            Action::WhichKeyScrollUp,
+        ),
+        b(false, ctrl_alt(PressCode::Down), Action::WhichKeyScrollDown),
+        b(
+            false,
+            ctrl_alt(PressCode::Char('n')),
+            Action::WhichKeyScrollDown,
+        ),
+        b(false, ctrl_alt(PressCode::PageUp), Action::WhichKeyPageUp),
+        b(
+            false,
+            ctrl_alt(PressCode::PageDown),
+            Action::WhichKeyPageDown,
+        ),
+        b(false, ctrl_alt(PressCode::Home), Action::WhichKeyHome),
+        b(false, ctrl_alt(PressCode::End), Action::WhichKeyEnd),
         // Ctrl+Tab 前后切换会话标签；Ctrl+Shift+Tab 反向
         b(
             false,
@@ -531,17 +645,6 @@ fn default_bindings() -> Vec<Binding> {
                 shift: true,
             },
             Action::PrevSession,
-        ),
-        // Shift+Tab 切换 plan 模式（FocusPrevTool 保留动作，默认不占用该键）
-        b(
-            false,
-            KeyPress {
-                code: PressCode::Tab,
-                ctrl: false,
-                alt: false,
-                shift: true,
-            },
-            Action::TogglePlanMode,
         ),
     ];
 
@@ -768,7 +871,10 @@ mod tests {
             .keys_for(Action::OpenCommandPalette)
             .iter()
             .any(|k| k == "ctrl+p"));
-        assert!(km.keys_for(Action::ToggleSidebar).iter().any(|k| k == "f2"));
+        assert!(km
+            .keys_for(Action::ToggleSidebar)
+            .iter()
+            .any(|k| k == "leader b"));
         assert!(km
             .keys_for(Action::OpenThemePicker)
             .iter()
@@ -793,9 +899,71 @@ mod tests {
             Action::Submit,
             Action::ScrollUp,
             Action::FocusNextTool,
+            Action::CycleModel,
+            Action::CycleAgent,
+            Action::ToggleWhichKey,
+            Action::ToggleWhichKeyLayout,
+            Action::WhichKeyGroupPrev,
+            Action::WhichKeyGroupNext,
+            Action::WhichKeyScrollUp,
+            Action::WhichKeyScrollDown,
+            Action::WhichKeyPageUp,
+            Action::WhichKeyPageDown,
+            Action::WhichKeyHome,
+            Action::WhichKeyEnd,
         ] {
             assert_eq!(Action::from_id(a.id()), Some(a));
         }
         assert_eq!(Action::from_id("switch_session"), None);
+    }
+
+    #[test]
+    fn opencode_parity_defaults() {
+        let km = Keymap::default();
+        let has = |a: Action, k: &str| km.keys_for(a).iter().any(|x| x == k);
+        // F2 循环模型、Tab 循环 agent
+        assert!(has(Action::CycleModel, "f2"));
+        assert!(has(Action::CycleModelReverse, "shift+f2"));
+        assert!(has(Action::CycleAgent, "tab"));
+        assert!(has(Action::CycleAgentReverse, "shift+tab"));
+        // which-key 开关/布局/导航
+        assert!(has(Action::ToggleWhichKey, "ctrl+alt+k"));
+        assert!(has(Action::ToggleWhichKeyLayout, "ctrl+alt+shift+k"));
+        assert!(has(Action::WhichKeyGroupPrev, "ctrl+alt+left"));
+        assert!(has(Action::WhichKeyGroupNext, "ctrl+alt+right"));
+        assert!(has(Action::WhichKeyScrollUp, "ctrl+alt+up"));
+        assert!(has(Action::WhichKeyScrollDown, "ctrl+alt+down"));
+        assert!(has(Action::WhichKeyPageUp, "ctrl+alt+pageup"));
+        assert!(has(Action::WhichKeyPageDown, "ctrl+alt+pagedown"));
+        assert!(has(Action::WhichKeyHome, "ctrl+alt+home"));
+        assert!(has(Action::WhichKeyEnd, "ctrl+alt+end"));
+        // 侧栏改由 leader 触发；工具卡聚焦无默认键（opencode 亦无）
+        assert!(has(Action::ToggleSidebar, "leader b"));
+        assert!(!km.keys_for(Action::ToggleSidebar).iter().any(|k| k == "f2"));
+        assert!(km.keys_for(Action::FocusNextTool).is_empty());
+        assert!(km.keys_for(Action::FocusPrevTool).is_empty());
+    }
+
+    #[test]
+    fn default_bindings_have_no_duplicate_triggers() {
+        let km = Keymap::default();
+        let mut seen: Vec<String> = Vec::new();
+        for a in [
+            Action::CycleModel,
+            Action::CycleModelReverse,
+            Action::CycleAgent,
+            Action::CycleAgentReverse,
+            Action::ToggleWhichKey,
+            Action::ToggleWhichKeyLayout,
+            Action::NextSession,
+            Action::PrevSession,
+            Action::ScrollUp,
+            Action::ScrollDown,
+        ] {
+            for k in km.keys_for(a) {
+                assert!(!seen.contains(&k), "duplicate trigger: {k}");
+                seen.push(k);
+            }
+        }
     }
 }

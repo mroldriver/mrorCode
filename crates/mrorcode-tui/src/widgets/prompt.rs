@@ -106,7 +106,7 @@ pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| state.working_dir.display().to_string());
     spans.push(Span::styled(
-        format!("   {cwd}   enter 发送 · ctrl+j 换行 · F2 侧栏"),
+        format!("   {cwd}   enter 发送 · ctrl+j 换行 · leader b 侧栏"),
         Style::default().fg(theme.text_muted),
     ));
     Line::from(spans)

@@ -1410,10 +1410,12 @@ TUI provider picker/拒绝切换/成功替换/失败保留 4 个。
     暂不自动化，先以构件（artifacts）方式提供。
   - 待人工：push tag（如 `v0.5.6`）后在 gitcode「流水线」确认三个 job 跑通，并回填
     Linux/交叉产物的实测体积基线。
-- [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
-  - 已完成（2026-09-26，v0.5.4）：headless `jsonl_event` 纯函数抽离 + 3 个契约测试冻结 11 种事件 schema；
-    kernel testkit 新增 `event_type_label`/`assert_event_types`，3 个 conformance 集成测试
-    （纯文本/工具调用/错误终止的事件类型序列）。
+- [x] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
+  （2026-09-28 完成，282 测试全绿；实施记录见本文末「M5-d 实施记录」）
+  - 里程碑过程：headless `jsonl_event` 纯函数抽离 + 3 个契约测试冻结 11 种事件 schema；
+    kernel testkit 新增 `event_type_label`/`assert_event_types`（3 个 conformance 集成测试：
+    纯文本/工具调用/错误终止的事件类型序列），随后扩展为 `stream_signature` /
+    `assert_stream_sequence` / `event_signature` / `assert_event_sequence` 公共断言器。
 - [x] M5-e：跨 provider 切换落地（轻量方案，运行时重建）。
   - 已完成（2026-09-26，v0.5.5）：
     - config 新增 `resolve_named(name)`（按条目解析，不受 default_provider/default_model 影响）；
@@ -1423,6 +1425,8 @@ TUI provider picker/拒绝切换/成功替换/失败保留 4 个。
       当前会话（会话体 provider 无关）→ 更新模型投影；plan 模式重新下发。
     - 失败降级：构建失败时旧 runtime 原样保留；busy 时拒绝切换。
     - 审批 grant 走共享内存 store，新 runtime 自动继承已授权命令。
+- [x] M5-f：TUI 与 opencode 对标（键位语义 / plan 事件 / toast / which-key / 工具输出）。
+  （2026-09-28 完成，258 测试全绿；差异清单见 `docs/todos/20260928-tui-parity-opencode-对标差异.md`）
 
 ### 人工冒烟记录（2026-09-27，v0.5.6，豆包 OpenAI 兼容）
 
@@ -1442,3 +1446,90 @@ TUI provider picker/拒绝切换/成功替换/失败保留 4 个。
 ### 自 M4 延后的可选项（评估，不默认纳入 M5）
 
 - diff viewer 内联语法高亮、图片/vision 输入、子 agent 实时嵌套视图（`AgentEvent::SubTask`）。
+
+---
+
+## M5-f 实施记录：TUI 与 opencode 对标（2026-09-28 完成）
+
+**目标**：把「同名功能、语义/键位不同」一栏（第三节）按 opencode v1.18.31 逐条对齐，
+参考实现为 `D:\gitcode\opencode\packages\tui`。
+
+**改动**
+
+- **F2 / Shift+F2**：切侧栏 → 在最近模型间正/反向循环（`store.rs::cycle_model`），
+  同步 `RuntimeHandle::set_model`，下一轮生效。循环顺序按 MRU（对齐 opencode 持久化的
+  `model.json` 的 `recent`），新增 KV 字段 `recent_models`（上限 8）。
+- **Tab / Shift+Tab**：聚焦工具卡 / plan 模式 → 在 build↔plan 间循环。工具卡聚焦改为鼠标点击，
+  Enter 仍展开/收起、Esc 清焦点。
+- **plan 模式**：保留手动切换，新增 `plan_enter` / `plan_exit` 工具完成事件自动切换
+  （kernel 侧暂未提供这两个工具，先按事件名对齐）。
+- **toast**：底部堆叠 3s → 右上角单条、5s、新 toast 覆盖旧 toast、按词折行。
+- **which-key 面板**：由「leader 窗口内弹出」改为 opencode 的 pinned 语义——默认关闭，
+  `ctrl+alt+k` 开关并持久化，打开后常驻；`ctrl+alt+shift+k` 切 dock/overlay
+  （dock 让内容让位、overlay 以不透明面板覆盖底部）。补齐面板本体：高度取屏幕 30%（钳制
+  8..16）、按 `CommandCategory` 分组页签、最多 3 列、页脚显示开关/下一布局键位、组内滚动，
+  新增 `ctrl+alt+←/→/↑/↓/PgUp/PgDn/Home/End` 导航（面板关闭时这些键不生效）。
+- **工具输出**：展开后移除 10 行硬上限，显示全部。
+- **可发现性**：`ctrl+alt+k` / `ctrl+alt+shift+k` / `f2` 无命令面板入口，
+  故在 `commands.rs` 注册 `cycle model` / `toggle key bindings` / `toggle key bindings layout`，
+  help 对话框随之能列出这些键位；侧栏改为 `leader b`。
+- **存储**：`~/.mrorcode/state.json` 新增 `which_key`（默认 false）、`which_key_layout`
+  （默认 dock）、`recent_models`（最近使用模型，上限 8）。
+
+**不采纳**
+
+- which-key 的「pending 序列自动预览」（opencode 默认关闭，需 overlay 布局 + 独立开关）；
+  mrorCode 的 leader 是模态前缀，无 pending 概念，保持显式开关。
+- `which_key_pending_toggle`（`ctrl+alt+shift+p`）依赖上述 pending 机制。
+- 分组页签的鼠标点击切换：暂用键盘导航（opencode 同时提供两者）。
+
+**验证**：`cargo test --workspace` 263 测试全绿（含新增 which-key 布局/滚动/持久化、MRU 模型
+循环、对标默认键位用例）、`cargo clippy --workspace --all-targets -- -D warnings` 零告警、
+`cargo fmt --check` 通过；`cargo bench -p mrorcode-tui --bench render` 帧相关基准无回归
+（`markdown/full_reparse_each_frame` 0.73ms、`windowed_frame/10000_msgs` 0.44ms）。
+
+---
+
+## M5-d 实施记录：headless JSONL 冻结 + conformance testkit（2026-09-28 完成）
+
+**目标**：冻结 `--json` 事件契约，并让两个 provider 跑同一套 conformance 断言。
+同时把测试暴露出来的两个真实缺陷修掉（其中 middleware 那条是安全问题）。
+
+**契约冻结**
+
+- `cli/headless.rs` 重构：输出逻辑集中到纯函数 `event_line()` / `run_finished_line()`，
+  新增 `Mode::{Plain, Json}` 与 `SCHEMA_VERSION = 1`；每行都带 `v` + `type`。
+- 事件类型共 11 种：`run.started` / `message.delta` / `reasoning.delta` / `tool.started` /
+  `tool.completed` / `usage` / `permission.denied` / `turn.completed` / `error` / `cancelled` /
+  `run.finished`。`run.finished` 恒为最后一行。
+- **终态语义**：只有 `turn.completed{stop_reason:"stopped"}` 是成功；`max_rounds` /
+  `provider_error` / `cancelled` 与错误均失败（退出码 1）。`error` 只是诊断行，不提前终止流，
+  否则会漏掉 `turn.completed`。`stop_reason` 用 `StopReason` 的 serde snake_case，
+  不用 Debug 字符串。
+- CLI 拆 lib + bin（`mrorcode_cli::headless`），使集成测试可直接驱动 headless。
+- 黄金基线 `tests/golden/headless-json.txt`（11 行，字节级 `include_str!` 比对），
+  配合 7 条字段级断言与 4 条集成测试（黄金 / 审批拒绝 / provider 错误 / plain 模式）。
+  **不引入 insta**：黄金文件 + `UPDATE_GOLDEN=1` 已足够，且避免新增依赖。
+
+**conformance 套件**
+
+- kernel `test-support` 新增 `stream_signature` / `assert_stream_sequence` /
+  `event_signature` / `assert_event_sequence`（签名忽略 usage 分片方式与 id 细节）。
+- `capabilities/tests/provider_conformance.rs` 用 wiremock 对同一份语义内容分别喂
+  OpenAI 兼容与 Anthropic：等价响应必须归一化成同一条非 usage 事件序列、usage 求和相等
+  （分片方式允许不同）、流错误都映射成 `StreamEvent::Error`、请求体语义一致。
+- 请求体的协议差异**不算漂移**，显式断言：anthropic 用 content block 数组并把 system
+  提到顶层，openai 用纯字符串且 system 是首条 message。
+
+**顺带修掉的两个真 bug**
+
+- **安全**：`agent::runtime::start()` 从未调用 `AgentBuilder::add_middleware`，审批中间件
+  形同虚设，Risky 工具在 TUI/headless 都会直接执行。已接线并加回归测试
+  （`middleware_is_wired_into_the_agent`；撤掉修复即失败）。
+- OpenAI 兼容流中途的 `{"error":{...}}` 会因解析不出 `choices` 被静默丢弃 → 整轮无输出却
+  以成功收场。现在映射为 `StreamEvent::Error`，retryable 判定与 Anthropic 的
+  `is_retryable` 对齐（限流/过载可恢复，参数类不可恢复）。另修 headless 的
+  `max_rounds` 错误状态码。
+
+**验证**：`cargo test --workspace` 282 测试全绿、`cargo clippy --workspace --all-targets
+-- -D warnings` 零告警、`cargo fmt --check` 通过（版本 0.5.6）。

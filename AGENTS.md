@@ -11,7 +11,7 @@ mrorcode-config  (leaf, readable by anyone)
 ## Commands (all verified on this tree)
 
 ```bash
-cargo test --workspace                          # ~241 tests, all green
+cargo test --workspace                          # 282 tests, all green
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 cargo build --release                           # -> target/release/mrorcode.exe
@@ -47,7 +47,13 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
 - **Themes**: `crates/mrorcode-tui/src/themes/*.json` are embedded by `build.rs` at compile time —
   adding one needs only a rebuild (vendored from opencode, MIT: `crates/mrorcode-tui/licenses/`).
 - **Testkit**: `mrorcode-kernel`'s `test-support` feature exposes `ScriptedProvider`/`EchoTool`
-  for integration tests; the crates' dev-dependencies already enable it.
+  plus the `stream_signature`/`assert_stream_sequence`/`assert_event_sequence` conformance
+  asserters; the crates' dev-dependencies already enable it.
+- **Headless JSONL is a frozen contract**: `crates/mrorcode-cli/src/headless.rs` is the single
+  source of truth (`SCHEMA_VERSION = 1`). Every line carries `v` + `type`; `run.finished` is always
+  last in `--json` mode. `error` is a diagnostic, not terminal — only `turn.completed` is. The
+  golden baseline is `crates/mrorcode-cli/tests/golden/headless-json.txt`; refresh it deliberately
+  with `UPDATE_GOLDEN=1 cargo test -p mrorcode-cli --test headless_json` and say why in the commit.
 - **Performance is a release gate, not polish**: no per-frame full markdown reparse, and no cache
   without a benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
   Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.

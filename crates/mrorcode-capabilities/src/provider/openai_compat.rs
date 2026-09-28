@@ -282,6 +282,9 @@ struct ToolCallTracker {
 impl ToolCallTracker {
     fn ingest(&mut self, chunk: Chunk) -> Vec<StreamEvent> {
         let mut out = Vec::new();
+        if let Some(err) = chunk.error {
+            out.push(StreamEvent::Error(err.into_provider_error()));
+        }
         if let Some(usage) = chunk.usage {
             if usage.prompt_tokens + usage.completion_tokens > 0 {
                 out.push(StreamEvent::Usage {
@@ -489,6 +492,54 @@ struct Chunk {
     choices: Vec<Choice>,
     #[serde(default)]
     usage: Option<ChunkUsage>,
+    /// 流中途的错误对象（`{"error":{...}}`）。缺它会被当成「无法解析的 chunk」静默丢弃，
+    /// 导致整轮无输出却以成功收场——与 Anthropic 的行为不一致。
+    #[serde(default)]
+    error: Option<ChunkError>,
+}
+
+#[derive(Deserialize)]
+struct ChunkError {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+}
+
+impl ChunkError {
+    /// 与 Anthropic 的 `is_retryable` 对齐：限流/过载类可恢复，其余不可恢复。
+    fn is_retryable(&self) -> bool {
+        let code = [self.r#type.as_deref(), self.code.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join(":");
+        [
+            "rate_limit",
+            "overloaded",
+            "server_error",
+            "timeout",
+            "temporarily",
+            "try_again",
+        ]
+        .iter()
+        .any(|m| code.contains(m))
+    }
+
+    fn into_provider_error(self) -> ProviderError {
+        let retryable = self.is_retryable();
+        ProviderError {
+            message: self
+                .message
+                .unwrap_or_else(|| "provider stream error".to_string()),
+            retryable,
+            http_status: None,
+            code: self.code.or(self.r#type),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -573,6 +624,40 @@ mod tests {
         ));
         assert!(matches!(&evs2[1], StreamEvent::ToolCallStarted { id, .. } if id == "call_2"));
         assert!(matches!(&evs2[2], StreamEvent::ToolCallDelta { id, .. } if id == "call_2"));
+    }
+
+    #[test]
+    fn in_stream_error_object_maps_to_provider_error() {
+        // 回归：{"error":{...}} 曾因解析不出 choices 而被静默跳过（整轮无输出却成功收场）
+        let mut tr = ToolCallTracker::default();
+        let evs = tr.ingest(
+            serde_json::from_str(
+                r#"{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+            )
+            .unwrap(),
+        );
+        match &evs[0] {
+            StreamEvent::Error(e) => {
+                assert!(e.retryable, "限流类错误应可恢复");
+                assert_eq!(e.message, "rate limited");
+                assert_eq!(e.code.as_deref(), Some("rate_limit_exceeded"));
+            }
+            other => panic!("expected Error event, got {other:?}"),
+        }
+
+        let evs = tr.ingest(
+            serde_json::from_str(
+                r#"{"error":{"message":"bad key","type":"invalid_request_error"}}"#,
+            )
+            .unwrap(),
+        );
+        match &evs[0] {
+            StreamEvent::Error(e) => {
+                assert!(!e.retryable, "参数类错误不可恢复");
+                assert_eq!(e.code.as_deref(), Some("invalid_request_error"));
+            }
+            other => panic!("expected Error event, got {other:?}"),
+        }
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{"type":"run.started","v":1}
+{"delta":"Hel","type":"message.delta","v":1}
+{"delta":"先想","type":"reasoning.delta","v":1}
+{"delta":"lo","type":"message.delta","v":1}
+{"input_tokens":12,"output_tokens":7,"type":"usage","v":1}
+{"arguments":"{\"text\":\"ping\"}","id":"call_1","tool":"echo","type":"tool.started","v":1}
+{"content":"{\"text\":\"ping\"}","id":"call_1","is_error":false,"tool":"echo","type":"tool.completed","v":1}
+{"delta":"done","type":"message.delta","v":1}
+{"input_tokens":20,"output_tokens":1,"type":"usage","v":1}
+{"stop_reason":"stopped","type":"turn.completed","v":1}
+{"success":true,"type":"run.finished","v":1}
