@@ -29,8 +29,7 @@ use crate::commands::{self, AppCommand};
 use crate::store::{AppState, Route};
 use crate::theme::Theme;
 use crate::widgets::dialog::{self, DialogOutcome, SelectPurpose};
-use crate::widgets::toast::ToastLevel;
-use crate::widgets::{home, permission, prompt, session, sidebar, tabs, toast};
+use crate::widgets::{home, permission, prompt, session, sidebar, tabs, toast, whichkey};
 
 const RENDER_COALESCE: Duration = Duration::from_millis(8);
 const SPINNER_TICK: Duration = Duration::from_millis(100);
@@ -522,8 +521,48 @@ fn apply_action(
             state.cycle_tool_focus(false);
             true
         }
-        TogglePlanMode => {
-            state.toggle_plan_mode(handle);
+        CycleAgent => {
+            state.cycle_agent(false, handle);
+            true
+        }
+        CycleAgentReverse => {
+            state.cycle_agent(true, handle);
+            true
+        }
+        CycleModel => {
+            state.cycle_model(false, handle);
+            true
+        }
+        CycleModelReverse => {
+            state.cycle_model(true, handle);
+            true
+        }
+        ToggleWhichKey => {
+            state.toggle_which_key();
+            true
+        }
+        ToggleWhichKeyLayout => {
+            state.toggle_which_key_layout();
+            true
+        }
+        // 面板导航键仅在面板可见时生效（opencode：绑定随 visible() 启停）
+        WhichKeyGroupPrev | WhichKeyGroupNext | WhichKeyScrollUp | WhichKeyScrollDown
+        | WhichKeyPageUp | WhichKeyPageDown | WhichKeyHome | WhichKeyEnd => {
+            if !state.which_key_visible() {
+                return true;
+            }
+            let (w, h) = whichkey_geometry(state);
+            match action {
+                WhichKeyGroupPrev => state.which_key_group_delta(-1),
+                WhichKeyGroupNext => state.which_key_group_delta(1),
+                WhichKeyScrollUp => state.which_key_scroll(w, h, -(whichkey::columns(w) as i32)),
+                WhichKeyScrollDown => state.which_key_scroll(w, h, whichkey::columns(w) as i32),
+                WhichKeyPageUp => state.which_key_scroll(w, h, -(whichkey::page_size(w, h) as i32)),
+                WhichKeyPageDown => state.which_key_scroll(w, h, whichkey::page_size(w, h) as i32),
+                WhichKeyHome => state.which_key_jump(w, h, false),
+                WhichKeyEnd => state.which_key_jump(w, h, true),
+                _ => {}
+            }
             true
         }
         ToggleReasoning => state.toggle_last_reasoning(),
@@ -658,6 +697,9 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         AppCommand::OpenModelPicker => state.open_model_picker(),
         AppCommand::ToggleSidebar => state.toggle_sidebar(),
         AppCommand::TogglePlanMode => state.toggle_plan_mode(handle),
+        AppCommand::CycleModel => state.cycle_model(false, handle),
+        AppCommand::ToggleWhichKey => state.toggle_which_key(),
+        AppCommand::ToggleWhichKeyLayout => state.toggle_which_key_layout(),
         AppCommand::ToggleReasoning => {
             state.toggle_last_reasoning();
         }
@@ -755,21 +797,68 @@ fn ensure_wake(spinner: &mut Option<Interval>, state: &AppState) {
 
 // ---------------- 绘制 ----------------
 
+/// which-key 面板几何（宽度、高度），取自最近一帧的屏幕尺寸。
+/// 键盘导航键需要按列数/页大小滚动，必须知道面板尺寸，故复用 `state.screen`。
+fn whichkey_geometry(state: &AppState) -> (u16, u16) {
+    (state.screen.width, whichkey::height(state.screen.height))
+}
+
 fn draw(f: &mut Frame<'_>, state: &mut AppState) {
     // 每帧一次浅克隆（~50 个 Color，栈分配），避免与 state 的可变借用冲突
     let theme = state.theme.clone();
     state.hit_regions.clear();
     let area = f.area();
+    state.screen = area;
     // 整屏背景
     Block::default()
         .style(Style::default().bg(theme.background))
         .render(area, f.buffer_mut());
 
-    match state.route {
-        Route::Home => {
-            home::render(state, area, f.buffer_mut(), &theme);
+    // which-key 面板：dock 时内容让位（会话区收缩），overlay 时浮于内容之上
+    // （对齐 opencode 的 `app_bottom` / `app` 两个插槽）
+    let whichkey_h = if state.route == Route::Session && state.which_key_visible() {
+        whichkey::height(area.height)
+    } else {
+        0
+    };
+    let reserve = match state.which_key_layout {
+        whichkey::WkLayout::Dock => whichkey_h,
+        whichkey::WkLayout::Overlay => 0,
+    };
+    if reserve > 0 {
+        let content = Rect {
+            height: area.height.saturating_sub(reserve),
+            ..area
+        };
+        match state.route {
+            Route::Home => home::render(state, content, f.buffer_mut(), &theme),
+            Route::Session => draw_session(f, state, &theme, content),
         }
-        Route::Session => draw_session(f, state, &theme, area),
+    } else {
+        match state.route {
+            Route::Home => {
+                home::render(state, area, f.buffer_mut(), &theme);
+            }
+            Route::Session => draw_session(f, state, &theme, area),
+        }
+    }
+
+    // which-key 面板（dock 与 overlay 都在屏幕最底部；dock 已在上方让出内容区）
+    if whichkey_h > 0 {
+        let wk_area = Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(whichkey_h),
+            width: area.width,
+            height: whichkey_h,
+        };
+        whichkey::render(
+            &state.keymap,
+            wk_area,
+            f.buffer_mut(),
+            &theme,
+            state.which_key_layout,
+            &state.which_key,
+        );
     }
 
     // 审批浮层
@@ -782,34 +871,9 @@ fn draw(f: &mut Frame<'_>, state: &mut AppState) {
         dialog::render_top(dialog, area, f.buffer_mut(), &theme);
     }
 
-    // which-key 浮层：leader 等待窗口内优先占底部（M4-7）
-    let leader_now = std::time::Instant::now();
-    let whichkey_h = if state.route == Route::Session && state.leader_active(leader_now) {
-        crate::widgets::whichkey::height(&state.keymap, area.width)
-    } else {
-        0
-    };
-    if whichkey_h > 0 {
-        let wk_area = Rect {
-            x: area.x,
-            y: area.y + area.height.saturating_sub(whichkey_h),
-            width: area.width,
-            height: whichkey_h,
-        };
-        crate::widgets::whichkey::render(&state.keymap, wk_area, f.buffer_mut(), &theme);
-    }
-
-    // toast 浮层（最新在下，底部居中；which-key/补全浮层时上移避让，M4-7/11）
-    let toasts: Vec<(ToastLevel, &str)> = state.active_toasts().collect();
-    if !toasts.is_empty() {
-        // 补全浮层占底部 prompt 行：同样纳入避让（M4-11）
-        let completion_h = if state.completion.as_ref().is_some_and(|c| c.visible()) {
-            1
-        } else {
-            0
-        };
-        let skip_bottom = whichkey_h.max(completion_h);
-        toast::render(area, f.buffer_mut(), &theme, &toasts, skip_bottom);
+    // toast：右上角单条（对齐 opencode，5s 过期）
+    if let Some((level, text)) = state.active_toast() {
+        toast::render(area, f.buffer_mut(), &theme, level, text);
     }
 
     // 记录本帧屏幕文本供选区提取；最后叠加选区高亮（M4-6）
@@ -1053,22 +1117,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn toasts_arm_wake_and_expire() {
+    async fn toast_arms_wake_and_expires_after_5s() {
         let mut state = test_state();
         state.toast("hi");
         let mut spinner: Option<tokio::time::Interval> = None;
         ensure_wake(&mut spinner, &state);
         assert!(spinner.is_some(), "active toast arms the wake interval");
         state.gc_toasts();
-        assert_eq!(state.active_toasts().count(), 1);
+        assert!(state.active_toast().is_some());
 
-        // 手动把时间戳调旧，gc 后节拍应撤掉
-        if let Some((_, t, _)) = state.toasts.first_mut() {
-            *t = std::time::Instant::now() - Duration::from_secs(4);
+        // 手动把时间戳调旧（>5s），gc 后节拍应撤掉
+        if let Some((_, t, _)) = state.current_toast.as_mut() {
+            *t = std::time::Instant::now() - Duration::from_secs(6);
         }
         state.gc_toasts();
         ensure_wake(&mut spinner, &state);
-        assert!(spinner.is_none(), "no timer after toasts expire");
+        assert!(spinner.is_none(), "no timer after toast expires");
+    }
+
+    #[tokio::test]
+    async fn new_toast_replaces_current() {
+        let mut state = test_state();
+        state.toast("first");
+        state.toast("second");
+        assert_eq!(state.active_toast().map(|(_, t)| t), Some("second"));
     }
 
     #[tokio::test]
@@ -1111,9 +1183,8 @@ mod tests {
         }
         assert!(!buffer_contains(&term, "line-a"));
 
-        // Tab 聚焦、Enter 展开后输出可见
-        assert!(on_key(&mut state, &k(KeyCode::Tab), &handle));
-        assert_eq!(state.focused_tool.as_deref(), Some("t1"));
+        // 直接聚焦工具卡、Enter 展开后输出可见
+        state.focused_tool = Some("t1".into());
         assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
         assert!(state.is_tool_expanded("t1"));
         term.draw(|f| draw(f, &mut state)).unwrap();
@@ -1266,7 +1337,7 @@ mod tests {
         // 真实绑定（含 leader）出现在 help 中
         assert!(buffer_contains(&term, "ctrl+p"));
         assert!(buffer_contains(&term, "leader t"));
-        assert!(buffer_contains(&term, "f2"));
+        assert!(buffer_contains(&term, "leader b"));
 
         // q 关闭
         on_key(&mut state, &k(KeyCode::Char('q')), &handle);
@@ -1662,14 +1733,14 @@ mod tests {
         assert!(buffer_contains(&term, "已"));
         assert!(buffer_contains(&term, "保"));
 
-        state.toasts.clear();
+        state.current_toast = None;
         term.draw(|f| draw(f, &mut state)).unwrap();
         assert!(!buffer_contains(&term, "已"));
         handle.shutdown();
     }
 
     #[tokio::test]
-    async fn ctrl_c_empty_quits_and_f2_toggles_sidebar() {
+    async fn ctrl_c_empty_quits_and_f2_cycles_model() {
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
         let mut state = test_state();
         on_key(
@@ -1679,10 +1750,151 @@ mod tests {
         );
         assert!(state.should_quit);
 
+        // F2 循环模型：单模型时不变，只提示
         let mut state2 = test_state();
-        assert!(state2.sidebar);
+        let model_before = state2.model.clone();
         on_key(&mut state2, &k(KeyCode::F(2)), &handle);
-        assert!(!state2.sidebar);
+        assert_eq!(state2.model, model_before);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn f2_cycles_between_available_models() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let path =
+            std::env::temp_dir().join(format!("mrorcode-tui-f2-{}.json", std::process::id()));
+        let (store, _) = crate::storage::Store::load_from(&path);
+        let mut state = AppState::new(
+            "m1".into(),
+            vec!["m1".into(), "m2".into()],
+            PathBuf::from("."),
+            store,
+        );
+        assert_eq!(state.model, "m1");
+        on_key(&mut state, &k(KeyCode::F(2)), &handle);
+        assert_eq!(state.model, "m2");
+        on_key(&mut state, &k(KeyCode::F(2)), &handle);
+        assert_eq!(state.model, "m1");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn tab_cycles_agent_plan_mode() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        assert!(!state.plan_mode);
+        on_key(&mut state, &k(KeyCode::Tab), &handle);
+        assert!(state.plan_mode);
+        on_key(&mut state, &k(KeyCode::BackTab), &handle);
+        assert!(!state.plan_mode);
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn ctrl_alt_k_pins_which_key_panel() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut state = test_state();
+        state.route = Route::Session;
+        // 默认关闭
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(!buffer_contains(&term, "toggle ctrl+alt+k"));
+
+        // ctrl+alt+k 打开后常驻（不依赖 leader 窗口）
+        on_key(
+            &mut state,
+            &KeyEvent::new(
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            &handle,
+        );
+        assert!(state.which_key_visible());
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&term, "toggle ctrl+alt+k"));
+        assert!(buffer_contains(&term, "overlay ctrl+alt+shift+k"));
+
+        // 再按关闭
+        on_key(
+            &mut state,
+            &KeyEvent::new(
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            &handle,
+        );
+        assert!(!state.which_key_visible());
+        term.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(!buffer_contains(&term, "toggle ctrl+alt+k"));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn which_key_navigation_keys_are_ignored_when_hidden() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // 面板关闭时导航键无效
+        on_key(&mut state, &key, &handle);
+        assert_eq!(state.which_key.group, None);
+
+        on_key(
+            &mut state,
+            &KeyEvent::new(
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+            &handle,
+        );
+        on_key(&mut state, &key, &handle);
+        assert_eq!(state.which_key.group, Some(1));
+        on_key(&mut state, &key, &handle);
+        assert_eq!(state.which_key.group, Some(2));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn which_key_dock_reserves_space_overlay_covers() {
+        /// 返回包含 needle 的行号（0 起）。
+        fn row_with(term: &Terminal<TestBackend>, w: u16, needle: &str) -> Option<usize> {
+            term.backend()
+                .buffer()
+                .content()
+                .chunks(w as usize)
+                .position(|row| {
+                    row.iter()
+                        .map(|c| c.symbol())
+                        .collect::<String>()
+                        .contains(needle)
+                })
+        }
+
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.route = Route::Session;
+        state.toggle_which_key();
+        let panel_h = crate::widgets::whichkey::height(40);
+        assert_eq!(panel_h, 12);
+        assert!(state.which_key_visible(), "panel should be on after toggle");
+        assert_eq!(
+            state.which_key_layout,
+            crate::widgets::whichkey::WkLayout::Dock
+        );
+
+        // dock：面板独占底部 12 行，会话区收缩，输入框提示上移
+        let mut dock = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        dock.draw(|f| draw(f, &mut state)).unwrap();
+        assert_eq!(row_with(&dock, 120, "toggle ctrl+alt+k"), Some(39));
+        assert_eq!(row_with(&dock, 120, "overlay ctrl+alt+shift+k"), Some(39));
+        assert_eq!(row_with(&dock, 120, "ctrl+j"), Some(27));
+
+        // overlay：会话区仍占满 40 行，不透明面板盖住底部输入框
+        state.toggle_which_key_layout();
+        let mut over = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        over.draw(|f| draw(f, &mut state)).unwrap();
+        assert_eq!(row_with(&over, 120, "toggle ctrl+alt+k"), Some(39));
+        assert_eq!(row_with(&over, 120, "dock ctrl+alt+shift+k"), Some(39));
+        assert_eq!(row_with(&over, 120, "ctrl+j"), None);
         handle.shutdown();
     }
 

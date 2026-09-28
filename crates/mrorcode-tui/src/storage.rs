@@ -28,7 +28,13 @@ pub struct KVData {
     pub sidebar: Option<bool>,
     /// 多会话标签栏是否显示（M4）。
     pub tabs: Option<bool>,
+    /// which-key 面板是否启用（默认 false，对齐 opencode）。
+    pub which_key: Option<bool>,
+    /// which-key 布局：dock / overlay。
+    pub which_key_layout: Option<String>,
     pub model: Option<String>,
+    /// 最近使用模型（对齐 opencode `model.json` 的 `recent`；F2 在此列表内循环）。
+    pub recent_models: Option<Vec<String>>,
     pub keybinds: Vec<KeybindEntry>,
     pub prompt_history: Vec<String>,
 }
@@ -40,7 +46,10 @@ impl Default for KVData {
             theme_mode: "dark".to_string(),
             sidebar: Some(true),
             tabs: Some(true),
+            which_key: Some(false),
+            which_key_layout: Some("dock".to_string()),
             model: None,
+            recent_models: None,
             keybinds: Vec::new(),
             prompt_history: Vec::new(),
         }

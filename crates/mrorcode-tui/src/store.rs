@@ -33,6 +33,9 @@ pub struct SessionMeta {
 /// 首个会话的固定 id；后续由 next_session_id 递增。
 pub const DEFAULT_SESSION: u64 = 1;
 
+/// 最近使用模型列表上限（对齐 opencode 的 recent 列表）。
+pub const RECENT_MODELS_MAX: usize = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
     Home,
@@ -147,8 +150,14 @@ pub struct AppState {
 
     /// Esc 双击中断的第一次时刻。
     pub esc_first: Option<Instant>,
-    /// 短暂 toast 队列（新尾追加，3s 过期，最多 5 条）；带级别（M4-11）。
-    pub toasts: Vec<(String, Instant, crate::widgets::toast::ToastLevel)>,
+    /// 单条 toast（对齐 opencode：新 toast 替换当前，5s 过期）。
+    pub current_toast: Option<(String, Instant, crate::widgets::toast::ToastLevel)>,
+
+    /// which-key 面板是否启用 / 布局（对齐 opencode，默认关闭 dock）。
+    pub which_key_on: bool,
+    pub which_key_layout: crate::widgets::whichkey::WkLayout,
+    /// which-key 当前分组页签与组内滚动偏移（不持久化）。
+    pub which_key: crate::widgets::whichkey::WkState,
 
     /// 已展开工具卡（按 tool id）；长输出默认折叠。
     pub expanded_tools: HashSet<String>,
@@ -183,6 +192,8 @@ pub struct AppState {
     pub select_mode: bool,
     /// 上一帧的屏幕文本行（选区提取用，M4-6）。
     pub screen_rows: Vec<String>,
+    /// 最近一帧的屏幕区域（which-key 面板几何换算用）。
+    pub screen: ratatui::layout::Rect,
 
     /// 累计 token 用量（M4-8 Context 分区）。
     pub usage_input_tokens: u64,
@@ -221,6 +232,11 @@ impl AppState {
     ) -> Self {
         let sidebar = kv.data.sidebar.unwrap_or(true);
         let show_tabs = kv.data.tabs.unwrap_or(true);
+        let which_key_on = kv.data.which_key.unwrap_or(false);
+        let which_key_layout = match kv.data.which_key_layout.as_deref() {
+            Some("overlay") => crate::widgets::whichkey::WkLayout::Overlay,
+            _ => crate::widgets::whichkey::WkLayout::Dock,
+        };
         let history = kv.data.prompt_history.clone();
         let theme_mode = Mode::parse(&kv.data.theme_mode);
         // KV 记住的模型在可选列表内时恢复（kernel 侧由调用方补发 SetModel）
@@ -286,7 +302,10 @@ impl AppState {
             last_total_lines: 0,
             viewport_lines: 0,
             esc_first: None,
-            toasts: Vec::new(),
+            current_toast: None,
+            which_key_on,
+            which_key_layout,
+            which_key: Default::default(),
             expanded_tools: HashSet::new(),
             expanded_reasoning: HashSet::new(),
             focused_reasoning: None,
@@ -301,6 +320,7 @@ impl AppState {
             selection: None,
             select_mode: false,
             screen_rows: Vec::new(),
+            screen: ratatui::layout::Rect::new(0, 0, 0, 0),
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             compacted: false,
@@ -365,13 +385,8 @@ impl AppState {
 
     /// 切换 plan 模式并通知 kernel（只读 gate）。
     pub fn toggle_plan_mode(&mut self, handle: &RuntimeHandle) {
-        self.plan_mode = !self.plan_mode;
-        handle.set_plan_mode(self.plan_mode);
-        if self.plan_mode {
-            self.toast("plan 模式：仅只读工具，写操作将被拒绝");
-        } else {
-            self.toast("已退出 plan 模式");
-        }
+        let on = !self.plan_mode;
+        self.set_plan_mode(on, handle);
     }
 
     // ---------- 输入补全（@文件 / /命令） ----------
@@ -524,53 +539,87 @@ impl AppState {
             self.model = name.to_string();
         }
         self.kv.data.model = Some(name.to_string());
+        self.record_model_use(name);
         let _ = self.kv.save();
         true
     }
 
-    /// 推入一条信息 toast；与上一条相同则不重复，上限 5 条。
-    pub fn toast(&mut self, text: impl Into<String>) {
-        self.push_toast(text.into(), ToastLevel::Info);
+    /// 把模型记到最近使用列表首位（对齐 opencode `model.json` 的 `recent`）。
+    fn record_model_use(&mut self, name: &str) {
+        let mut recent: Vec<String> = self
+            .kv
+            .data
+            .recent_models
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m != name)
+            .collect();
+        recent.insert(0, name.to_string());
+        recent.truncate(RECENT_MODELS_MAX);
+        self.kv.data.recent_models = Some(recent);
     }
 
-    /// 推入一条警告 toast（左边框 warning 色）。
-    pub fn toast_warn(&mut self, text: impl Into<String>) {
-        self.push_toast(text.into(), ToastLevel::Warn);
-    }
-
-    /// 推入一条错误 toast（左边框 error 色）。
-    pub fn toast_error(&mut self, text: impl Into<String>) {
-        self.push_toast(text.into(), ToastLevel::Error);
-    }
-
-    fn push_toast(&mut self, text: String, level: ToastLevel) {
-        if self.toasts.last().map(|(t, _, _)| t.as_str()) != Some(text.as_str()) {
-            self.toasts.push((text, Instant::now(), level));
-            if self.toasts.len() > 5 {
-                let drop_n = self.toasts.len() - 5;
-                self.toasts.drain(0..drop_n);
+    /// 最近使用模型列表（对齐 opencode F2 的循环范围）。
+    /// 优先取持久化的最近列表，未记录的可用模型按 `available_models` 顺序补在后面。
+    pub fn recent_models(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for m in self
+            .kv
+            .data
+            .recent_models
+            .iter()
+            .flatten()
+            .chain(self.available_models.iter())
+        {
+            if self.available_models.iter().any(|a| a == m) && !out.contains(m) {
+                out.push(m.clone());
             }
+        }
+        out
+    }
+
+    /// 显示一条信息 toast（新 toast 替换当前，对齐 opencode）。
+    pub fn toast(&mut self, text: impl Into<String>) {
+        self.show_toast(text.into(), ToastLevel::Info);
+    }
+
+    /// 显示一条警告 toast。
+    pub fn toast_warn(&mut self, text: impl Into<String>) {
+        self.show_toast(text.into(), ToastLevel::Warn);
+    }
+
+    /// 显示一条错误 toast。
+    pub fn toast_error(&mut self, text: impl Into<String>) {
+        self.show_toast(text.into(), ToastLevel::Error);
+    }
+
+    fn show_toast(&mut self, text: String, level: ToastLevel) {
+        self.current_toast = Some((text, Instant::now(), level));
+    }
+
+    /// 清理过期 toast（由慢节拍调用，5s 过期）。
+    pub fn gc_toasts(&mut self) {
+        let fresh = self
+            .current_toast
+            .as_ref()
+            .is_some_and(|(_, t, _)| t.elapsed() < Duration::from_secs(5));
+        if !fresh {
+            self.current_toast = None;
         }
     }
 
-    /// 清理过期 toast（由慢节拍定时调用）。
-    pub fn gc_toasts(&mut self) {
-        self.toasts
-            .retain(|(_, t, _)| t.elapsed() < Duration::from_secs(3));
-    }
-
     pub fn has_active_toasts(&self) -> bool {
-        self.toasts
-            .iter()
-            .any(|(_, t, _)| t.elapsed() < Duration::from_secs(3))
+        self.current_toast
+            .as_ref()
+            .is_some_and(|(_, t, _)| t.elapsed() < Duration::from_secs(5))
     }
 
-    /// 当前帧应显示的 toast（新→旧），携带级别（M4-11）。
-    pub fn active_toasts(&self) -> impl Iterator<Item = (ToastLevel, &str)> {
-        self.toasts
-            .iter()
-            .rev()
-            .filter(|(_, t, _)| t.elapsed() < Duration::from_secs(3))
+    /// 当前帧应显示的 toast（最多一条）。
+    pub fn active_toast(&self) -> Option<(ToastLevel, &str)> {
+        self.current_toast
+            .as_ref()
+            .filter(|(_, t, _)| t.elapsed() < Duration::from_secs(5))
             .map(|(s, _, l)| (*l, s.as_str()))
     }
 
@@ -632,6 +681,132 @@ impl AppState {
 
     pub fn is_tool_expanded(&self, id: &str) -> bool {
         self.expanded_tools.contains(id)
+    }
+
+    // ---------- 模型循环（对齐 opencode F2） ----------
+
+    /// 循环到最近使用模型列表中的上一个/下一个；kernel 下一轮生效。
+    pub fn cycle_model(&mut self, reverse: bool, handle: &RuntimeHandle) {
+        let models = self.recent_models();
+        if models.len() < 2 {
+            self.toast("只有一个可用模型");
+            return;
+        }
+        let pos = models.iter().position(|m| m == &self.model);
+        let len = models.len();
+        let idx = match pos {
+            Some(i) => {
+                if reverse {
+                    (i + len - 1) % len
+                } else {
+                    (i + 1) % len
+                }
+            }
+            None => {
+                if reverse {
+                    len - 1
+                } else {
+                    0
+                }
+            }
+        };
+        let name = models[idx].clone();
+        self.model = name.clone();
+        self.kv.data.model = Some(name.clone());
+        self.record_model_use(&name);
+        let _ = self.kv.save();
+        handle.set_model(name.clone());
+        self.toast(format!("模型：{name}（下一轮生效）"));
+    }
+
+    // ---------- agent 循环（对齐 opencode Tab：build/plan） ----------
+
+    /// 在 build/plan 之间切换并通知 kernel。
+    pub fn cycle_agent(&mut self, reverse: bool, handle: &RuntimeHandle) {
+        let _ = reverse;
+        self.set_plan_mode(!self.plan_mode, handle);
+    }
+
+    fn set_plan_mode(&mut self, on: bool, handle: &RuntimeHandle) {
+        self.plan_mode = on;
+        handle.set_plan_mode(on);
+        if on {
+            self.toast("plan 模式：仅只读工具，写操作将被拒绝");
+        } else {
+            self.toast("已退出 plan 模式");
+        }
+    }
+
+    // ---------- which-key 开关（对齐 opencode） ----------
+
+    /// 开关 which-key 面板并持久化；关闭时重置滚动位置。
+    pub fn toggle_which_key(&mut self) {
+        self.which_key_on = !self.which_key_on;
+        if !self.which_key_on {
+            self.which_key.offset = 0;
+        }
+        self.kv.data.which_key = Some(self.which_key_on);
+        let _ = self.kv.save();
+    }
+
+    /// 在 dock/overlay 布局间切换并持久化。
+    pub fn toggle_which_key_layout(&mut self) {
+        self.which_key_layout = match self.which_key_layout {
+            crate::widgets::whichkey::WkLayout::Dock => crate::widgets::whichkey::WkLayout::Overlay,
+            crate::widgets::whichkey::WkLayout::Overlay => crate::widgets::whichkey::WkLayout::Dock,
+        };
+        let label = match self.which_key_layout {
+            crate::widgets::whichkey::WkLayout::Dock => "dock",
+            crate::widgets::whichkey::WkLayout::Overlay => "overlay",
+        };
+        self.kv.data.which_key_layout = Some(label.to_string());
+        let _ = self.kv.save();
+    }
+
+    /// which-key 面板是否显示：开关打开即常驻（对齐 opencode 的 pinned 语义，
+    /// 不随 leader 窗口消失）。
+    pub fn which_key_visible(&self) -> bool {
+        self.which_key_on
+    }
+
+    /// 切换分组页签（`delta` 为 -1/1），切组后回到组首。
+    pub fn which_key_group_delta(&mut self, delta: i32) {
+        use crate::widgets::whichkey as wk;
+        let n = wk::group_labels(&wk::leader_items(&self.keymap)).len();
+        if n == 0 {
+            return;
+        }
+        let n = n as i32;
+        let cur = self.which_key.group.unwrap_or_default() as i32;
+        let next = ((cur + delta) % n + n) % n;
+        self.which_key.group = Some(next as usize);
+        self.which_key.offset = 0;
+    }
+
+    /// 组内滚动（`delta` 为行数差，负数向上）。
+    pub fn which_key_scroll(&mut self, width: u16, panel_h: u16, delta: i32) {
+        let max = self.which_key_max_offset(width, panel_h);
+        let next = (self.which_key.offset as i32 + delta).clamp(0, max as i32);
+        self.which_key.offset = next as usize;
+    }
+
+    /// 滚动到组首 / 组尾。
+    pub fn which_key_jump(&mut self, width: u16, panel_h: u16, to_end: bool) {
+        self.which_key.offset = if to_end {
+            self.which_key_max_offset(width, panel_h)
+        } else {
+            0
+        };
+    }
+
+    /// 当前分组可滚动到的最大偏移。
+    pub fn which_key_max_offset(&self, width: u16, panel_h: u16) -> usize {
+        use crate::widgets::whichkey as wk;
+        let items = wk::leader_items(&self.keymap);
+        let Some(group) = wk::resolve_group(&self.which_key, &items) else {
+            return 0;
+        };
+        wk::max_offset(&items, group, width, panel_h)
     }
 
     // ---------- reasoning 折叠（M4-1） ----------
@@ -1201,6 +1376,15 @@ impl AppState {
                     self.note_touched_file(&p);
                 }
             }
+            AgentEvent::ToolResult { name, .. }
+                if session_id == self.active_session
+                    && matches!(name.as_str(), "plan_enter" | "plan_exit") =>
+            {
+                let on = name == "plan_enter";
+                if self.plan_mode != on {
+                    self.set_plan_mode(on, handle);
+                }
+            }
             _ => {}
         }
         if session_id == self.active_session {
@@ -1518,6 +1702,7 @@ mod tests {
     use super::*;
     use crate::storage::Store as KvStore;
     use crate::widgets::dialog::DialogOutcome;
+    use crate::widgets::whichkey::WkLayout;
 
     fn temp_state(tag: &str) -> AppState {
         let path = std::env::temp_dir().join(format!(
@@ -1740,24 +1925,126 @@ mod tests {
     }
 
     #[test]
-    fn toast_levels_are_kept_and_deduped() {
+    fn toast_levels_replace_current() {
         let mut st = temp_state("toast-levels");
         st.toast("info a");
         st.toast_warn("warn b");
+        // 新 toast 替换当前，级别随最新一条
+        assert_eq!(st.active_toast(), Some((ToastLevel::Warn, "warn b")));
         st.toast_error("err c");
-        // 与当前最后一条相同则不重复
-        st.toast_error("err c");
-        let active: Vec<_> = st.active_toasts().collect();
-        assert_eq!(active.len(), 3);
-        assert_eq!(active[0], (ToastLevel::Error, "err c"));
-        assert_eq!(active[1], (ToastLevel::Warn, "warn b"));
-        assert_eq!(active[2], (ToastLevel::Info, "info a"));
-        // 级别为 Error 的错误类 toast 不应回退为 Info
-        let mut st2 = temp_state("toast-levels-2");
-        st2.toast_error("boom");
-        assert_eq!(
-            st2.active_toasts().next(),
-            Some((ToastLevel::Error, "boom"))
+        assert_eq!(st.active_toast(), Some((ToastLevel::Error, "err c")));
+    }
+
+    #[test]
+    fn recent_models_are_recorded_mru_first_and_capped() {
+        let mut st = temp_state("recent-models");
+        st.available_models = vec!["a".into(), "b".into(), "c".into()];
+        assert!(st.set_model("b"));
+        st.set_model("c");
+        st.set_model("b");
+        // 最近使用在前，重复项前移而非重复
+        assert_eq!(st.recent_models(), vec!["b", "c", "a"]);
+        // 持久化的 recent 列表按上限截断
+        st.available_models = (0..RECENT_MODELS_MAX as u32 + 3)
+            .map(|i| format!("m{i}"))
+            .collect();
+        for i in 0..RECENT_MODELS_MAX as u32 + 3 {
+            st.set_model(&format!("m{i}"));
+        }
+        let stored = st.kv.data.recent_models.clone().unwrap();
+        assert_eq!(stored.len(), RECENT_MODELS_MAX);
+        assert_eq!(stored[0], format!("m{}", RECENT_MODELS_MAX + 2));
+        // 循环范围 = recent 前缀 + 其余可用模型
+        let cycle = st.recent_models();
+        assert_eq!(cycle.len(), st.available_models.len());
+        assert_eq!(cycle[0], stored[0]);
+    }
+
+    #[test]
+    fn set_model_rejects_unknown_model() {
+        let mut st = temp_state("set-model-unknown");
+        st.available_models = vec!["a".into()];
+        assert!(!st.set_model("zzz"));
+        assert_eq!(st.model, "m");
+    }
+
+    #[test]
+    fn which_key_toggle_pins_panel_and_persists() {
+        let mut st = temp_state("which-key-toggle");
+        assert!(!st.which_key_visible());
+        st.which_key.offset = 3;
+        st.toggle_which_key();
+        // 打开后常驻显示，不随 leader 窗口消失
+        assert!(st.which_key_visible());
+        st.toggle_which_key();
+        assert!(!st.which_key_visible());
+        // 关闭时重置滚动位置
+        assert_eq!(st.which_key.offset, 0);
+        assert_eq!(st.kv.data.which_key, Some(false));
+    }
+
+    #[test]
+    fn which_key_layout_toggles_and_persists() {
+        let mut st = temp_state("which-key-layout");
+        assert_eq!(st.which_key_layout, WkLayout::Dock);
+        st.toggle_which_key_layout();
+        assert_eq!(st.which_key_layout, WkLayout::Overlay);
+        assert_eq!(st.kv.data.which_key_layout.as_deref(), Some("overlay"));
+        st.toggle_which_key_layout();
+        assert_eq!(st.which_key_layout, WkLayout::Dock);
+    }
+
+    #[test]
+    fn which_key_group_delta_wraps_around() {
+        use crate::widgets::whichkey as wk;
+        let mut st = temp_state("which-key-group");
+        let n = wk::group_labels(&wk::leader_items(&st.keymap)).len();
+        assert!(n > 1);
+        for _ in 0..n {
+            st.which_key_group_delta(1);
+        }
+        assert_eq!(st.which_key.group, Some(0));
+        st.which_key_group_delta(-1);
+        assert_eq!(st.which_key.group, Some(n - 1));
+    }
+
+    #[test]
+    fn which_key_scroll_is_clamped_to_max_offset() {
+        use crate::widgets::whichkey as wk;
+        let mut st = temp_state("which-key-scroll");
+        st.toggle_which_key();
+        let (w, h) = (30u16, 8u16);
+        // 选条目最多的分组；窄面板单列 3 行，条目多于一页才可滚动
+        let items = wk::leader_items(&st.keymap);
+        let labels = wk::group_labels(&items);
+        let mut best = (0usize, 0usize);
+        for (i, g) in labels.iter().enumerate() {
+            let n = wk::group_entries(&items, g).len();
+            if n > best.0 {
+                best = (n, i);
+            }
+        }
+        st.which_key.group = Some(best.1);
+        let max = st.which_key_max_offset(w, h);
+        assert!(
+            max > 0,
+            "expected group with {} entries to overflow",
+            best.0
         );
+        st.which_key_scroll(w, h, 1);
+        assert_eq!(st.which_key.offset, 1);
+        st.which_key_jump(w, h, true);
+        assert_eq!(st.which_key.offset, max);
+        st.which_key_scroll(w, h, 99);
+        assert_eq!(st.which_key.offset, max);
+        st.which_key_jump(w, h, false);
+        assert_eq!(st.which_key.offset, 0);
+        st.which_key_scroll(w, h, -99);
+        assert_eq!(st.which_key.offset, 0);
+        // 切组后回到组首
+        st.which_key_jump(w, h, true);
+        st.which_key_group_delta(1);
+        assert_eq!(st.which_key.offset, 0);
+        assert!(wk::page_size(w, h) > 0);
     }
 }
