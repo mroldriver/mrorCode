@@ -145,3 +145,128 @@ pub async fn drain_until_terminal(handle: &mut AgentHandle) -> Vec<AgentEvent> {
     }
     out
 }
+
+/// 流事件的紧凑摘要：跨 provider 对比时，两个 wire 格式应产出同一份摘要。
+pub fn stream_signature(ev: &StreamEvent) -> String {
+    match ev {
+        StreamEvent::TextDelta(t) => format!("text:{t}"),
+        StreamEvent::Reasoning(t) => format!("reasoning:{t}"),
+        StreamEvent::ToolCallStarted { id, name } => format!("tool_start:{id}:{name}"),
+        StreamEvent::ToolCallDelta { id, arguments } => format!("tool_args:{id}:{arguments}"),
+        StreamEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } => format!("usage:{input_tokens}/{output_tokens}"),
+        StreamEvent::Error(e) => format!("error:{}:{}", e.retryable, e.message),
+    }
+}
+
+/// 断言流事件序列的摘要等于期望（M5-d：provider conformance 的公共断言器）。
+pub fn assert_stream_sequence(actual: &[StreamEvent], expected: &[&str]) {
+    let got: Vec<String> = actual.iter().map(stream_signature).collect();
+    assert_eq!(got, expected, "stream event sequence drifted");
+}
+
+/// agent 事件的紧凑摘要（不含字段值，只留类型与关键 id）。
+pub fn event_signature(ev: &AgentEvent) -> String {
+    match ev {
+        AgentEvent::TurnStarted => "turn_started".to_string(),
+        AgentEvent::TextDelta(_) => "text_delta".to_string(),
+        AgentEvent::Reasoning(_) => "reasoning_delta".to_string(),
+        AgentEvent::ToolStarted { name, .. } => format!("tool_started:{name}"),
+        AgentEvent::ToolResult { name, is_error, .. } => {
+            format!(
+                "tool_result:{name}:{}",
+                if *is_error { "error" } else { "ok" }
+            )
+        }
+        AgentEvent::Usage { .. } => "usage".to_string(),
+        AgentEvent::Request { kind, .. } => format!("request:{kind}"),
+        AgentEvent::TurnComplete { stop_reason } => {
+            format!("turn_complete:{stop_reason:?}").to_lowercase()
+        }
+        AgentEvent::Error { retryable, .. } => format!("error:{retryable}"),
+        AgentEvent::Cancelled => "cancelled".to_string(),
+    }
+}
+
+/// 断言 agent 事件序列的摘要等于期望（M5-d：driver 侧序列冻结的公共断言器）。
+pub fn assert_event_sequence(actual: &[AgentEvent], expected: &[&str]) {
+    let got: Vec<String> = actual.iter().map(event_signature).collect();
+    assert_eq!(got, expected, "agent event sequence drifted");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::ProviderError;
+
+    #[test]
+    fn signatures_are_stable_and_typed() {
+        let evs = vec![
+            StreamEvent::TextDelta("a".into()),
+            StreamEvent::Reasoning("b".into()),
+            StreamEvent::ToolCallStarted {
+                id: "i".into(),
+                name: "n".into(),
+            },
+            StreamEvent::ToolCallDelta {
+                id: "i".into(),
+                arguments: "{}".into(),
+            },
+            StreamEvent::Usage {
+                input_tokens: 1,
+                output_tokens: 2,
+            },
+            StreamEvent::Error(ProviderError {
+                message: "m".into(),
+                retryable: true,
+                http_status: None,
+                code: None,
+            }),
+        ];
+        assert_stream_sequence(
+            &evs,
+            &[
+                "text:a",
+                "reasoning:b",
+                "tool_start:i:n",
+                "tool_args:i:{}",
+                "usage:1/2",
+                "error:true:m",
+            ],
+        );
+    }
+
+    #[test]
+    fn agent_event_signatures() {
+        let evs = vec![
+            AgentEvent::TurnStarted,
+            AgentEvent::TextDelta("x".into()),
+            AgentEvent::ToolStarted {
+                id: "i".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            AgentEvent::ToolResult {
+                id: "i".into(),
+                name: "bash".into(),
+                content: "c".into(),
+                is_error: true,
+            },
+            AgentEvent::TurnComplete {
+                stop_reason: crate::event::StopReason::Stopped,
+            },
+        ];
+        assert_event_sequence(
+            &evs,
+            &[
+                "turn_started",
+                "text_delta",
+                "tool_started:bash",
+                "tool_result:bash:error",
+                "turn_complete:stopped",
+            ],
+        );
+    }
+}
