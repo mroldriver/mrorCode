@@ -1337,7 +1337,50 @@ server（filesystem）冒烟。
   - 待 M5-a CI 就绪后：cargo-dist 三平台产物上传。
 - [ ] M5-d：`--json` 契约快照测试 + 双 provider conformance 套件。
 - [ ] M5-e：跨 provider 切换有落地方案（轻量或 daemon，按设计文档结论）。
+- [x] M5-f：TUI 与 opencode 对标（键位语义 / plan 事件 / toast / which-key / 工具输出）。
+  （2026-09-28 完成，258 测试全绿；差异清单见 `docs/todos/20260928-tui-parity-opencode-对标差异.md`）
 
 ### 自 M4 延后的可选项（评估，不默认纳入 M5）
 
 - diff viewer 内联语法高亮、图片/vision 输入、子 agent 实时嵌套视图（`AgentEvent::SubTask`）。
+
+---
+
+## M5-f 实施记录：TUI 与 opencode 对标（2026-09-28 完成）
+
+**目标**：把「同名功能、语义/键位不同」一栏（第三节）按 opencode v1.18.31 逐条对齐，
+参考实现为 `D:\gitcode\opencode\packages\tui`。
+
+**改动**
+
+- **F2 / Shift+F2**：切侧栏 → 在最近模型间正/反向循环（`store.rs::cycle_model`），
+  同步 `RuntimeHandle::set_model`，下一轮生效。循环顺序按 MRU（对齐 opencode 持久化的
+  `model.json` 的 `recent`），新增 KV 字段 `recent_models`（上限 8）。
+- **Tab / Shift+Tab**：聚焦工具卡 / plan 模式 → 在 build↔plan 间循环。工具卡聚焦改为鼠标点击，
+  Enter 仍展开/收起、Esc 清焦点。
+- **plan 模式**：保留手动切换，新增 `plan_enter` / `plan_exit` 工具完成事件自动切换
+  （kernel 侧暂未提供这两个工具，先按事件名对齐）。
+- **toast**：底部堆叠 3s → 右上角单条、5s、新 toast 覆盖旧 toast、按词折行。
+- **which-key 面板**：由「leader 窗口内弹出」改为 opencode 的 pinned 语义——默认关闭，
+  `ctrl+alt+k` 开关并持久化，打开后常驻；`ctrl+alt+shift+k` 切 dock/overlay
+  （dock 让内容让位、overlay 以不透明面板覆盖底部）。补齐面板本体：高度取屏幕 30%（钳制
+  8..16）、按 `CommandCategory` 分组页签、最多 3 列、页脚显示开关/下一布局键位、组内滚动，
+  新增 `ctrl+alt+←/→/↑/↓/PgUp/PgDn/Home/End` 导航（面板关闭时这些键不生效）。
+- **工具输出**：展开后移除 10 行硬上限，显示全部。
+- **可发现性**：`ctrl+alt+k` / `ctrl+alt+shift+k` / `f2` 无命令面板入口，
+  故在 `commands.rs` 注册 `cycle model` / `toggle key bindings` / `toggle key bindings layout`，
+  help 对话框随之能列出这些键位；侧栏改为 `leader b`。
+- **存储**：`~/.mrorcode/state.json` 新增 `which_key`（默认 false）、`which_key_layout`
+  （默认 dock）、`recent_models`（最近使用模型，上限 8）。
+
+**不采纳**
+
+- which-key 的「pending 序列自动预览」（opencode 默认关闭，需 overlay 布局 + 独立开关）；
+  mrorCode 的 leader 是模态前缀，无 pending 概念，保持显式开关。
+- `which_key_pending_toggle`（`ctrl+alt+shift+p`）依赖上述 pending 机制。
+- 分组页签的鼠标点击切换：暂用键盘导航（opencode 同时提供两者）。
+
+**验证**：`cargo test --workspace` 263 测试全绿（含新增 which-key 布局/滚动/持久化、MRU 模型
+循环、对标默认键位用例）、`cargo clippy --workspace --all-targets -- -D warnings` 零告警、
+`cargo fmt --check` 通过；`cargo bench -p mrorcode-tui --bench render` 帧相关基准无回归
+（`markdown/full_reparse_each_frame` 0.73ms、`windowed_frame/10000_msgs` 0.44ms）。
