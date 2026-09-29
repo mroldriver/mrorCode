@@ -95,6 +95,9 @@ pub fn action_label(a: Action) -> &'static str {
         Action::CopySelection => "复制选区",
         Action::Rewind => "回退会话",
         Action::PinSession => "固定会话",
+        Action::ExportTranscript => "导出会话",
+        Action::WidenSidebar => "加宽侧栏",
+        Action::NarrowSidebar => "缩窄侧栏",
         Action::SwitchProvider => "切换 provider",
     }
 }
@@ -109,7 +112,8 @@ pub fn action_group(a: Action) -> &'static str {
         | Action::OpenModelPicker
         | Action::SwitchProvider
         | Action::Rewind
-        | Action::PinSession => "Session",
+        | Action::PinSession
+        | Action::ExportTranscript => "Session",
         Action::OpenThemePicker
         | Action::ToggleSidebar
         | Action::ToggleTabs
@@ -125,7 +129,9 @@ pub fn action_group(a: Action) -> &'static str {
         | Action::HistoryNext
         | Action::FocusNextTool
         | Action::FocusPrevTool
-        | Action::ToggleFocusedTool => "View",
+        | Action::ToggleFocusedTool
+        | Action::WidenSidebar
+        | Action::NarrowSidebar => "View",
         Action::ToggleWhichKey
         | Action::ToggleWhichKeyLayout
         | Action::WhichKeyGroupPrev

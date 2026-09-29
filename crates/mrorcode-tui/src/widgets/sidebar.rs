@@ -15,7 +15,6 @@ use ratatui::widgets::{Block, Borders, Widget};
 use crate::store::AppState;
 use crate::theme::Theme;
 
-pub const WIDTH: u16 = 42;
 const SESSION_TITLE: &str = "Sessions";
 const CONTEXT_TITLE: &str = "Context";
 const FILES_TITLE: &str = "Files";

@@ -630,6 +630,24 @@ fn apply_action(
             });
             true
         }
+        ExportTranscript => match state.export_transcript() {
+            Ok(path) => {
+                state.toast(format!("已导出：{}", path.display()));
+                true
+            }
+            Err(e) => {
+                state.open_alert("导出失败", e.to_string());
+                true
+            }
+        },
+        WidenSidebar => {
+            state.adjust_sidebar_width(4);
+            true
+        }
+        NarrowSidebar => {
+            state.adjust_sidebar_width(-4);
+            true
+        }
         ScrollUp => {
             if state.route == Route::Session {
                 state.scroll_up(state.viewport_lines / 2 + 1);
@@ -871,6 +889,16 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         AppCommand::PinSession => {
             state.toggle_pin_active();
         }
+        AppCommand::ExportTranscript => match state.export_transcript() {
+            Ok(path) => {
+                state.toast(format!("已导出：{}", path.display()));
+            }
+            Err(e) => {
+                state.open_alert("导出失败", e.to_string());
+            }
+        },
+        AppCommand::WidenSidebar => state.adjust_sidebar_width(4),
+        AppCommand::NarrowSidebar => state.adjust_sidebar_width(-4),
         AppCommand::Quit => state.should_quit = true,
         AppCommand::Interrupt => {
             if state.phase.is_busy() {
@@ -1089,8 +1117,9 @@ fn draw_session(
     area: ratatui::layout::Rect,
 ) {
     let show_sidebar = state.sidebar && area.width > 100;
+    let sw = state.sidebar_width;
     let main_width = if show_sidebar {
-        area.width - sidebar::WIDTH
+        area.width - sw
     } else {
         area.width
     };
@@ -1101,7 +1130,7 @@ fn draw_session(
     let side = ratatui::layout::Rect {
         x: area.x + main_width,
         y: area.y,
-        width: if show_sidebar { sidebar::WIDTH } else { 0 },
+        width: if show_sidebar { sw } else { 0 },
         height: area.height,
     };
 
@@ -1823,7 +1852,7 @@ mod tests {
         assert!(buffer_contains(&term, "toggle sidebar"));
 
         // 过滤到 toggle sidebar 并执行
-        for ch in "side".chars() {
+        for ch in "toggle sidebar".chars() {
             on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
         }
         on_key(&mut state, &k(KeyCode::Enter), &handle);

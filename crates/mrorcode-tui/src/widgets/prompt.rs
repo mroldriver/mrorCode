@@ -1,6 +1,6 @@
 //! 底部输入区的元信息行与样式装配（TextArea 本体在 store 中）。
 
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
@@ -75,6 +75,16 @@ pub fn render_prompt(
 /// 底栏元信息。
 pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
     let mut spans = vec![Span::from(" ")];
+
+    // 左侧状态前缀：OC | model | dir
+    spans.push(Span::styled(
+        "OC",
+        Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
+
     match state.phase {
         Phase::Working | Phase::WaitingApproval => {
             spans.push(Span::styled(
@@ -83,8 +93,8 @@ pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
             ));
             spans.push(Span::styled(
                 match state.phase {
-                    Phase::WaitingApproval => "waiting approval · esc interrupt",
-                    _ => "working…  esc interrupt",
+                    Phase::WaitingApproval => "waiting approval",
+                    _ => "working…",
                 },
                 Style::default().fg(theme.warning),
             ));
@@ -100,13 +110,17 @@ pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
         }
     }
 
+    spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
     let cwd = state
         .working_dir
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| state.working_dir.display().to_string());
+    spans.push(Span::styled(cwd, Style::default().fg(theme.text_muted)));
+
+    // 右侧提示
     spans.push(Span::styled(
-        format!("   {cwd}   enter 发送 · ctrl+j 换行 · leader b 侧栏"),
+        "   enter 发送 · ctrl+j 换行 · leader b 侧栏",
         Style::default().fg(theme.text_muted),
     ));
     Line::from(spans)

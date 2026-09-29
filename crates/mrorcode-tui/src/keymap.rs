@@ -107,6 +107,11 @@ pub enum Action {
     Rewind,
     /// 固定/取消固定当前会话。
     PinSession,
+    /// 导出当前会话为 Markdown 文件。
+    ExportTranscript,
+    /// 加宽/缩窄侧栏。
+    WidenSidebar,
+    NarrowSidebar,
     /// 跨 provider 切换（重建 runtime，M5-e）。
     SwitchProvider,
 }
@@ -159,6 +164,9 @@ impl Action {
             Action::CopySelection => "copy_selection",
             Action::Rewind => "rewind",
             Action::PinSession => "pin_session",
+            Action::ExportTranscript => "export_transcript",
+            Action::WidenSidebar => "widen_sidebar",
+            Action::NarrowSidebar => "narrow_sidebar",
             Action::SwitchProvider => "switch_provider",
         }
     }
@@ -208,6 +216,9 @@ impl Action {
             "copy_selection" => Action::CopySelection,
             "rewind" => Action::Rewind,
             "pin_session" => Action::PinSession,
+            "export_transcript" => Action::ExportTranscript,
+            "widen_sidebar" => Action::WidenSidebar,
+            "narrow_sidebar" => Action::NarrowSidebar,
             "switch_provider" => Action::SwitchProvider,
             _ => return None,
         })

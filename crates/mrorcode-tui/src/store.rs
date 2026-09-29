@@ -127,6 +127,8 @@ pub struct AppState {
     pub pending_provider_switch: Option<String>,
     pub working_dir: PathBuf,
     pub sidebar: bool,
+    /// 侧栏宽度（列数）。
+    pub sidebar_width: u16,
     /// 多会话标签栏是否显示（M4-4）。
     pub show_tabs: bool,
 
@@ -245,6 +247,7 @@ impl AppState {
         kv: Store,
     ) -> Self {
         let sidebar = kv.data.sidebar.unwrap_or(true);
+        let sidebar_width = kv.data.sidebar_width.unwrap_or(42).clamp(20, 80);
         let show_tabs = kv.data.tabs.unwrap_or(true);
         let which_key_on = kv.data.which_key.unwrap_or(false);
         let which_key_layout = match kv.data.which_key_layout.as_deref() {
@@ -298,6 +301,7 @@ impl AppState {
             pending_provider_switch: None,
             working_dir,
             sidebar,
+            sidebar_width,
             show_tabs,
             messages: Vec::new(),
             next_message_uid: 1,
@@ -401,6 +405,14 @@ impl AppState {
     pub fn toggle_tabs(&mut self) {
         self.show_tabs = !self.show_tabs;
         self.kv.data.tabs = Some(self.show_tabs);
+        let _ = self.kv.save();
+    }
+
+    /// 调整侧栏宽度（delta 列），持久化。
+    pub fn adjust_sidebar_width(&mut self, delta: i16) {
+        let new = (self.sidebar_width as i16 + delta).clamp(20, 80) as u16;
+        self.sidebar_width = new;
+        self.kv.data.sidebar_width = Some(new);
         let _ = self.kv.save();
     }
 
@@ -1240,6 +1252,63 @@ impl AppState {
         if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
             s.pinned = !s.pinned;
         }
+    }
+
+    /// 导出当前会话为 Markdown 文件，返回文件路径。
+    pub fn export_transcript(&self) -> std::io::Result<PathBuf> {
+        let title = self
+            .sessions
+            .iter()
+            .find(|s| s.id == self.active_session)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "会话".to_string());
+        let safe: String = title
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(40)
+            .collect();
+        let filename = format!("mrorcode-{safe}.md");
+        let path = self.working_dir.join(&filename);
+
+        let mut md = String::new();
+        md.push_str(&format!("# {title}\n\n"));
+        md.push_str(&format!("> 模型：{}\n\n", self.model));
+
+        for msg in &self.messages {
+            match msg.role {
+                Role::User => {
+                    md.push_str(&format!("## 🧑 用户\n\n{}\n\n", msg.text));
+                }
+                Role::Assistant => {
+                    if !msg.reasoning.is_empty() {
+                        md.push_str("<details><summary>💭 思考过程</summary>\n\n");
+                        md.push_str(&format!("{}\n\n</details>\n\n", msg.reasoning));
+                    }
+                    md.push_str(&format!("## 🤖 助手\n\n{}\n\n", msg.text));
+                    for tool in &msg.tools {
+                        let status = match tool.status {
+                            ToolStatus::Ok => "✓",
+                            ToolStatus::Failed => "✗",
+                            ToolStatus::Running => "⏳",
+                            _ => "",
+                        };
+                        md.push_str(&format!(
+                            "<details><summary>🔧 {} {}</summary>\n\n```\n{}\n```\n\n</details>\n\n",
+                            tool.name, status, tool.output
+                        ));
+                    }
+                }
+            }
+        }
+
+        std::fs::write(&path, &md)?;
+        Ok(path)
     }
 
     /// 前后循环切换会话标签（M4-4）。

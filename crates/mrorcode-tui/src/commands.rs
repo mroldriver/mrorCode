@@ -28,6 +28,12 @@ pub enum AppCommand {
     RewindSession,
     /// 固定/取消固定当前会话。
     PinSession,
+    /// 导出当前会话为 Markdown 文件。
+    ExportTranscript,
+    /// 加宽侧栏。
+    WidenSidebar,
+    /// 缩窄侧栏。
+    NarrowSidebar,
     /// 跨 provider 切换（重建 runtime，M5-e）。
     SwitchProvider,
     Quit,
@@ -197,6 +203,27 @@ pub fn registry() -> &'static [CommandSpec] {
             default_keys: &[],
         },
         CommandSpec {
+            command: AppCommand::ExportTranscript,
+            name: "export transcript",
+            desc: "导出当前会话为 Markdown 文件",
+            category: CommandCategory::Session,
+            default_keys: &[],
+        },
+        CommandSpec {
+            command: AppCommand::WidenSidebar,
+            name: "widen sidebar",
+            desc: "加宽侧栏",
+            category: CommandCategory::View,
+            default_keys: &[],
+        },
+        CommandSpec {
+            command: AppCommand::NarrowSidebar,
+            name: "narrow sidebar",
+            desc: "缩窄侧栏",
+            category: CommandCategory::View,
+            default_keys: &[],
+        },
+        CommandSpec {
             command: AppCommand::Interrupt,
             name: "interrupt",
             desc: "中断当前请求",
@@ -241,6 +268,9 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::SelectText => "select_text",
         AppCommand::RewindSession => "rewind_session",
         AppCommand::PinSession => "pin_session",
+        AppCommand::ExportTranscript => "export_transcript",
+        AppCommand::WidenSidebar => "widen_sidebar",
+        AppCommand::NarrowSidebar => "narrow_sidebar",
         AppCommand::SwitchProvider => "switch_provider",
         AppCommand::Quit => "quit",
         AppCommand::Interrupt => "interrupt",
@@ -275,6 +305,9 @@ pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
         AppCommand::SelectText => A::ToggleSelect,
         AppCommand::RewindSession => A::Rewind,
         AppCommand::PinSession => A::PinSession,
+        AppCommand::ExportTranscript => A::ExportTranscript,
+        AppCommand::WidenSidebar => A::WidenSidebar,
+        AppCommand::NarrowSidebar => A::NarrowSidebar,
         AppCommand::SwitchProvider => A::SwitchProvider,
         AppCommand::Quit => A::Quit,
         AppCommand::Interrupt => A::Interrupt,
