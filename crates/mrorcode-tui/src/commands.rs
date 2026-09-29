@@ -26,6 +26,8 @@ pub enum AppCommand {
     ToggleTabs,
     SelectText,
     RewindSession,
+    /// 固定/取消固定当前会话。
+    PinSession,
     /// 跨 provider 切换（重建 runtime，M5-e）。
     SwitchProvider,
     Quit,
@@ -188,6 +190,13 @@ pub fn registry() -> &'static [CommandSpec] {
             default_keys: &["leader w"],
         },
         CommandSpec {
+            command: AppCommand::PinSession,
+            name: "pin session",
+            desc: "固定/取消固定当前会话",
+            category: CommandCategory::Session,
+            default_keys: &[],
+        },
+        CommandSpec {
             command: AppCommand::Interrupt,
             name: "interrupt",
             desc: "中断当前请求",
@@ -231,6 +240,7 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::ToggleTabs => "toggle_tabs",
         AppCommand::SelectText => "select_text",
         AppCommand::RewindSession => "rewind_session",
+        AppCommand::PinSession => "pin_session",
         AppCommand::SwitchProvider => "switch_provider",
         AppCommand::Quit => "quit",
         AppCommand::Interrupt => "interrupt",
@@ -264,6 +274,7 @@ pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
         AppCommand::ToggleTabs => A::ToggleTabs,
         AppCommand::SelectText => A::ToggleSelect,
         AppCommand::RewindSession => A::Rewind,
+        AppCommand::PinSession => A::PinSession,
         AppCommand::SwitchProvider => A::SwitchProvider,
         AppCommand::Quit => A::Quit,
         AppCommand::Interrupt => A::Interrupt,

@@ -105,6 +105,8 @@ pub enum Action {
     CopySelection,
     /// 回退会话到历史某轮之前（M4-9）。
     Rewind,
+    /// 固定/取消固定当前会话。
+    PinSession,
     /// 跨 provider 切换（重建 runtime，M5-e）。
     SwitchProvider,
 }
@@ -156,6 +158,7 @@ impl Action {
             Action::ToggleSelect => "toggle_select",
             Action::CopySelection => "copy_selection",
             Action::Rewind => "rewind",
+            Action::PinSession => "pin_session",
             Action::SwitchProvider => "switch_provider",
         }
     }
@@ -204,6 +207,7 @@ impl Action {
             "toggle_select" => Action::ToggleSelect,
             "copy_selection" => Action::CopySelection,
             "rewind" => Action::Rewind,
+            "pin_session" => Action::PinSession,
             "switch_provider" => Action::SwitchProvider,
             _ => return None,
         })

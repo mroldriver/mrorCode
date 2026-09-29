@@ -615,6 +615,21 @@ fn apply_action(
             state.open_rewind_picker();
             true
         }
+        PinSession => {
+            state.toggle_pin_active();
+            let pinned = state
+                .sessions
+                .iter()
+                .find(|s| s.id == state.active_session)
+                .map(|s| s.pinned)
+                .unwrap_or(false);
+            state.toast(if pinned {
+                "已固定会话"
+            } else {
+                "已取消固定"
+            });
+            true
+        }
         ScrollUp => {
             if state.route == Route::Session {
                 state.scroll_up(state.viewport_lines / 2 + 1);
@@ -852,6 +867,9 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         }
         AppCommand::RewindSession => {
             state.open_rewind_picker();
+        }
+        AppCommand::PinSession => {
+            state.toggle_pin_active();
         }
         AppCommand::Quit => state.should_quit = true,
         AppCommand::Interrupt => {

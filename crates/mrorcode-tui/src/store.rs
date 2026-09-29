@@ -28,6 +28,8 @@ pub struct SessionMeta {
     pub id: u64,
     pub title: String,
     pub phase: Phase,
+    /// 固定会话：pin 后排在侧栏最前（对齐 opencode 的 session pin）。
+    pub pinned: bool,
 }
 
 /// 首个会话的固定 id；后续由 next_session_id 递增。
@@ -138,6 +140,8 @@ pub struct AppState {
     next_session_id: u64,
     /// 非活动会话的消息投影（切回即恢复；M2 仅进程内）。
     pub buckets: HashMap<u64, Vec<MessageView>>,
+    /// 每个会话的输入草稿（切会话时暂存/恢复）。
+    drafts: HashMap<u64, String>,
     pub prompt: TextArea<'static>,
     /// 已提交历史（M1 内存）。
     pub history: Vec<String>,
@@ -256,8 +260,8 @@ impl AppState {
             }
             _ => model,
         };
-        let themes_dark = ThemeSet::bundled(Mode::Dark);
-        let themes_light = ThemeSet::bundled(Mode::Light);
+        let themes_dark = ThemeSet::bundled(Mode::Dark).with_user_themes(Mode::Dark);
+        let themes_light = ThemeSet::bundled(Mode::Light).with_user_themes(Mode::Light);
         let theme_name = kv
             .data
             .theme
@@ -301,10 +305,12 @@ impl AppState {
                 id: DEFAULT_SESSION,
                 title: "新会话".to_string(),
                 phase: Phase::Idle,
+                pinned: false,
             }],
             active_session: DEFAULT_SESSION,
             next_session_id: DEFAULT_SESSION + 1,
             buckets: HashMap::new(),
+            drafts: HashMap::new(),
             prompt,
             history,
             hist_idx: None,
@@ -1075,6 +1081,7 @@ impl AppState {
                 id,
                 title: record.title.clone(),
                 phase: Phase::Idle,
+                pinned: false,
             });
         }
         let projected = project_conversation(&record.conversation, &mut self.next_message_uid);
@@ -1150,9 +1157,13 @@ impl AppState {
             id,
             title: "新会话".to_string(),
             phase: Phase::Idle,
+            pinned: false,
         });
         self.active_session = id;
         self.messages.clear();
+        self.prompt = TextArea::new(vec![String::new()]);
+        self.prompt
+            .set_cursor_line_style(ratatui::style::Style::default());
         self.route = Route::Home;
         self.reset_session_view();
         id
@@ -1170,6 +1181,7 @@ impl AppState {
         } else {
             Route::Session
         };
+        self.restore_prompt_draft(id);
         self.reset_session_view();
         true
     }
@@ -1177,6 +1189,7 @@ impl AppState {
     /// 删除会话（仅进程内，M3 接磁盘时会有真正的 unlink 确认）。
     pub fn delete_session(&mut self, id: u64) {
         self.buckets.remove(&id);
+        self.drafts.remove(&id);
         self.sessions.retain(|s| s.id != id);
         if id != self.active_session {
             return;
@@ -1191,6 +1204,7 @@ impl AppState {
                 } else {
                     Route::Session
                 };
+                self.restore_prompt_draft(target);
                 self.reset_session_view();
             }
             None => {
@@ -1200,8 +1214,12 @@ impl AppState {
                     id,
                     title: "新会话".to_string(),
                     phase: Phase::Idle,
+                    pinned: false,
                 });
                 self.active_session = id;
+                self.prompt = TextArea::new(vec![String::new()]);
+                self.prompt
+                    .set_cursor_line_style(ratatui::style::Style::default());
                 self.route = Route::Home;
                 self.reset_session_view();
             }
@@ -1213,6 +1231,14 @@ impl AppState {
         match self.sessions.get(n as usize - 1) {
             Some(s) => self.switch_session(s.id),
             None => false,
+        }
+    }
+
+    /// 固定/取消固定当前会话（pinned 排侧栏最前）。
+    pub fn toggle_pin_active(&mut self) {
+        let id = self.active_session;
+        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+            s.pinned = !s.pinned;
         }
     }
 
@@ -1271,13 +1297,37 @@ impl AppState {
         )));
     }
 
-    /// 当前活动消息收桶（空消息不占桶）。
+    /// 当前活动消息收桶（空消息不占桶）；同时暂存输入草稿。
     fn stash_active(&mut self) {
-        if self.messages.is_empty() {
-            return;
+        if !self.messages.is_empty() {
+            self.buckets
+                .insert(self.active_session, std::mem::take(&mut self.messages));
         }
-        self.buckets
-            .insert(self.active_session, std::mem::take(&mut self.messages));
+        // 暂存输入草稿（非空才存，空草稿不占空间）
+        let text = self.prompt.lines().join("\n");
+        if !text.is_empty() {
+            self.drafts.insert(self.active_session, text);
+        } else {
+            self.drafts.remove(&self.active_session);
+        }
+    }
+
+    /// 恢复指定会话的输入草稿。
+    fn restore_prompt_draft(&mut self, id: u64) {
+        let text = self.drafts.remove(&id).unwrap_or_default();
+        let lines: Vec<String> = if text.is_empty() {
+            vec![String::new()]
+        } else {
+            text.split('\n').map(|s| s.to_string()).collect()
+        };
+        self.prompt = TextArea::new(lines);
+        self.prompt
+            .set_cursor_line_style(ratatui::style::Style::default());
+        // 光标移到末尾
+        let last = self.prompt.lines().len().saturating_sub(1);
+        let col = self.prompt.lines().get(last).map(|l| l.len()).unwrap_or(0);
+        self.prompt
+            .move_cursor(tui_textarea::CursorMove::Jump(last as u16, col as u16));
     }
 
     /// 打开 help：行数据由注册表 + 当前 keymap（含用户覆盖）实时生成。

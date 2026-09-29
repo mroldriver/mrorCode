@@ -94,6 +94,7 @@ pub fn action_label(a: Action) -> &'static str {
         Action::ToggleSelect => "选择文本",
         Action::CopySelection => "复制选区",
         Action::Rewind => "回退会话",
+        Action::PinSession => "固定会话",
         Action::SwitchProvider => "切换 provider",
     }
 }
@@ -107,7 +108,8 @@ pub fn action_group(a: Action) -> &'static str {
         | Action::SwitchSession(_)
         | Action::OpenModelPicker
         | Action::SwitchProvider
-        | Action::Rewind => "Session",
+        | Action::Rewind
+        | Action::PinSession => "Session",
         Action::OpenThemePicker
         | Action::ToggleSidebar
         | Action::ToggleTabs

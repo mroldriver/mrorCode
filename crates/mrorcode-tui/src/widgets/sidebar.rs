@@ -59,7 +59,10 @@ pub fn render(
         section_header(state, SESSION_TITLE, y, inner, buf, theme, bottom_limit);
     hits.extend(more_hits);
     y = sec_y + 1;
-    for session in state.sessions.iter() {
+    // 固定会话排最前（保持组内原顺序）
+    let mut ordered: Vec<&crate::store::SessionMeta> = state.sessions.iter().collect();
+    ordered.sort_by_key(|s| std::cmp::Reverse(s.pinned));
+    for session in ordered {
         if y >= bottom_limit {
             break;
         }
@@ -69,13 +72,14 @@ pub fn render(
         } else {
             "  "
         };
+        let pin = if session.pinned { "\u{1F4CC} " } else { "  " };
         let glyph = if session.phase.is_busy() {
             format!("{} ", state.spinner_glyph())
         } else {
             String::new()
         };
         let label =
-            crate::render::truncate_end(&session.title, (inner.width as usize).saturating_sub(6));
+            crate::render::truncate_end(&session.title, (inner.width as usize).saturating_sub(8));
         let color = if active {
             theme.primary
         } else {
@@ -83,6 +87,7 @@ pub fn render(
         };
         let line = Line::from(vec![
             Span::styled(marker, Style::default().fg(theme.primary)),
+            Span::styled(pin, Style::default().fg(theme.warning)),
             Span::styled(glyph, Style::default().fg(color)),
             Span::styled(label, Style::default().fg(color)),
         ]);
