@@ -112,6 +112,8 @@ pub enum Action {
     /// 加宽/缩窄侧栏。
     WidenSidebar,
     NarrowSidebar,
+    /// 在外部编辑器中打开当前输入。
+    OpenExternalEditor,
     /// 跨 provider 切换（重建 runtime，M5-e）。
     SwitchProvider,
 }
@@ -167,6 +169,7 @@ impl Action {
             Action::ExportTranscript => "export_transcript",
             Action::WidenSidebar => "widen_sidebar",
             Action::NarrowSidebar => "narrow_sidebar",
+            Action::OpenExternalEditor => "open_external_editor",
             Action::SwitchProvider => "switch_provider",
         }
     }
@@ -219,6 +222,7 @@ impl Action {
             "export_transcript" => Action::ExportTranscript,
             "widen_sidebar" => Action::WidenSidebar,
             "narrow_sidebar" => Action::NarrowSidebar,
+            "open_external_editor" => Action::OpenExternalEditor,
             "switch_provider" => Action::SwitchProvider,
             _ => return None,
         })
@@ -677,6 +681,7 @@ fn default_bindings() -> Vec<Binding> {
         leader(PressCode::Char('v')),
         leader(PressCode::Char('w')),
         leader(PressCode::Char('s')),
+        leader(PressCode::Char('e')),
     ];
     let leader_actions = [
         Action::OpenCommandPalette,
@@ -692,6 +697,7 @@ fn default_bindings() -> Vec<Binding> {
         Action::ToggleSelect,
         Action::Rewind,
         Action::SwitchProvider,
+        Action::OpenExternalEditor,
     ];
 
     let mut all = plain;

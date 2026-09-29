@@ -112,13 +112,25 @@ pub fn render(
         if c_vis && sec_y + 1 < bottom_limit {
             y = sec_y + 1;
             let mut lines: Vec<Line> = Vec::new();
-            let tokens = state
-                .usage_input_tokens
-                .saturating_add(state.usage_output_tokens);
+            let in_t = state.usage_input_tokens;
+            let out_t = state.usage_output_tokens;
+            let total = in_t.saturating_add(out_t);
             lines.push(Line::from(vec![
                 Span::styled("tokens   ", Style::default().fg(theme.text_muted)),
-                Span::styled(format!("{tokens}"), Style::default().fg(theme.text)),
+                Span::styled(format!("{total}"), Style::default().fg(theme.text)),
             ]));
+            if in_t > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("  in     ", Style::default().fg(theme.text_muted)),
+                    Span::styled(format!("{in_t}"), Style::default().fg(theme.text_muted)),
+                ]));
+            }
+            if out_t > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("  out    ", Style::default().fg(theme.text_muted)),
+                    Span::styled(format!("{out_t}"), Style::default().fg(theme.text_muted)),
+                ]));
+            }
             lines.push(Line::from(vec![
                 Span::styled(
                     "compacted",

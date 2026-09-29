@@ -125,6 +125,8 @@ pub struct AppState {
     pub assemble_options: mrorcode_agent::AssembleOptions,
     /// 已选定待执行的 provider 切换（在事件循环顶部处理，M5-e）。
     pub pending_provider_switch: Option<String>,
+    /// 待打开外部编辑器（在事件循环顶部处理，需先恢复终端）。
+    pub pending_external_editor: bool,
     pub working_dir: PathBuf,
     pub sidebar: bool,
     /// 侧栏宽度（列数）。
@@ -299,6 +301,7 @@ impl AppState {
             config: mrorcode_config::Config::default(),
             assemble_options: mrorcode_agent::AssembleOptions::default(),
             pending_provider_switch: None,
+            pending_external_editor: false,
             working_dir,
             sidebar,
             sidebar_width,

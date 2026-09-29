@@ -34,6 +34,8 @@ pub enum AppCommand {
     WidenSidebar,
     /// 缩窄侧栏。
     NarrowSidebar,
+    /// 在外部编辑器中打开当前输入。
+    OpenExternalEditor,
     /// 跨 provider 切换（重建 runtime，M5-e）。
     SwitchProvider,
     Quit,
@@ -224,6 +226,13 @@ pub fn registry() -> &'static [CommandSpec] {
             default_keys: &[],
         },
         CommandSpec {
+            command: AppCommand::OpenExternalEditor,
+            name: "open in editor",
+            desc: "在 $EDITOR 中打开当前输入",
+            category: CommandCategory::App,
+            default_keys: &["leader e"],
+        },
+        CommandSpec {
             command: AppCommand::Interrupt,
             name: "interrupt",
             desc: "中断当前请求",
@@ -271,6 +280,7 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::ExportTranscript => "export_transcript",
         AppCommand::WidenSidebar => "widen_sidebar",
         AppCommand::NarrowSidebar => "narrow_sidebar",
+        AppCommand::OpenExternalEditor => "open_external_editor",
         AppCommand::SwitchProvider => "switch_provider",
         AppCommand::Quit => "quit",
         AppCommand::Interrupt => "interrupt",
@@ -308,6 +318,7 @@ pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
         AppCommand::ExportTranscript => A::ExportTranscript,
         AppCommand::WidenSidebar => A::WidenSidebar,
         AppCommand::NarrowSidebar => A::NarrowSidebar,
+        AppCommand::OpenExternalEditor => A::OpenExternalEditor,
         AppCommand::SwitchProvider => A::SwitchProvider,
         AppCommand::Quit => A::Quit,
         AppCommand::Interrupt => A::Interrupt,

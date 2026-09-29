@@ -55,12 +55,17 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
     let [footer] = Layout::horizontal([Constraint::Length(pw)])
         .flex(Flex::Center)
         .areas(body[4]);
-    Paragraph::new(Line::from(Span::styled(
-        "enter 发送 · ctrl+j 换行 · esc 退出",
-        Style::default().fg(theme.text_muted),
-    )))
-    .centered()
-    .render(footer, buf);
+    let tips = vec![
+        Line::from(Span::styled(
+            "enter 发送 · ctrl+j 换行 · esc 退出",
+            Style::default().fg(theme.text_muted),
+        )),
+        Line::from(Span::styled(
+            "ctrl+p 命令面板 · ctrl+n 新会话 · leader e 编辑器",
+            Style::default().fg(theme.text_muted),
+        )),
+    ];
+    Paragraph::new(tips).centered().render(footer, buf);
 
     let _ = Route::Home;
 }

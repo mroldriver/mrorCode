@@ -98,6 +98,7 @@ pub fn action_label(a: Action) -> &'static str {
         Action::ExportTranscript => "导出会话",
         Action::WidenSidebar => "加宽侧栏",
         Action::NarrowSidebar => "缩窄侧栏",
+        Action::OpenExternalEditor => "外部编辑器",
         Action::SwitchProvider => "切换 provider",
     }
 }
@@ -152,7 +153,8 @@ pub fn action_group(a: Action) -> &'static str {
         | Action::CycleAgent
         | Action::CycleAgentReverse
         | Action::CycleModel
-        | Action::CycleModelReverse => "App",
+        | Action::CycleModelReverse
+        | Action::OpenExternalEditor => "App",
     }
 }
 

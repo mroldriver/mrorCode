@@ -22,6 +22,7 @@ use ratatui::{Frame, Terminal};
 use std::pin::Pin;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{Interval, Sleep};
+use tui_textarea::TextArea;
 
 use mrorcode_agent::{AssembleOptions, Assembly, RuntimeEvent};
 
@@ -106,6 +107,12 @@ pub async fn run(
         // 待执行的 provider 切换：在事件循环顶部统一处理（M5-e）。
         if state.pending_provider_switch.is_some() {
             apply_provider_switch(&mut state, &mut handle, &mut events).await;
+            dirty = true;
+        }
+        // 外部编辑器：恢复终端 → 编辑临时文件 → 回读 → 重建终端
+        if state.pending_external_editor {
+            state.pending_external_editor = false;
+            run_external_editor(&mut state, &mut terminal);
             dirty = true;
         }
         ensure_wake(&mut spinner, &mut blinker, &mut state);
@@ -648,6 +655,10 @@ fn apply_action(
             state.adjust_sidebar_width(-4);
             true
         }
+        OpenExternalEditor => {
+            state.pending_external_editor = true;
+            true
+        }
         ScrollUp => {
             if state.route == Route::Session {
                 state.scroll_up(state.viewport_lines / 2 + 1);
@@ -899,6 +910,9 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         },
         AppCommand::WidenSidebar => state.adjust_sidebar_width(4),
         AppCommand::NarrowSidebar => state.adjust_sidebar_width(-4),
+        AppCommand::OpenExternalEditor => {
+            state.pending_external_editor = true;
+        }
         AppCommand::Quit => state.should_quit = true,
         AppCommand::Interrupt => {
             if state.phase.is_busy() {
@@ -1190,6 +1204,60 @@ fn setup_terminal() -> anyhow::Result<Term> {
 fn shutdown_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+}
+
+/// 恢复终端 → 在 $EDITOR 中编辑临时文件 → 回读 → 重建终端。
+fn run_external_editor(state: &mut AppState, terminal: &mut Term) {
+    use std::io::Write;
+
+    // 1. 写入当前输入到临时文件
+    let text = state.prompt.lines().join("\n");
+    let tmp = std::env::temp_dir().join(format!("mrorcode-edit-{}.md", std::process::id()));
+    if let Ok(mut f) = std::fs::File::create(&tmp) {
+        let _ = f.write_all(text.as_bytes());
+    }
+
+    // 2. 恢复终端
+    let _ = terminal.clear();
+    shutdown_terminal();
+
+    // 3. 调用编辑器
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
+    let _ = std::process::Command::new(&editor).arg(&tmp).status();
+
+    // 4. 回读文件
+    if let Ok(edited) = std::fs::read_to_string(&tmp) {
+        let trimmed = edited.trim_end_matches('\n').to_string();
+        let lines: Vec<String> = if trimmed.is_empty() {
+            vec![String::new()]
+        } else {
+            trimmed.split('\n').map(|s| s.to_string()).collect()
+        };
+        state.prompt = TextArea::new(lines);
+        state
+            .prompt
+            .set_cursor_line_style(ratatui::style::Style::default());
+        let last = state.prompt.lines().len().saturating_sub(1);
+        let col = state.prompt.lines().get(last).map(|l| l.len()).unwrap_or(0);
+        state
+            .prompt
+            .move_cursor(tui_textarea::CursorMove::Jump(last as u16, col as u16));
+    }
+    let _ = std::fs::remove_file(&tmp);
+
+    // 5. 重建终端
+    if let Ok(new_term) = setup_terminal() {
+        *terminal = new_term;
+    }
+    state.toast("已从编辑器载入");
 }
 
 fn install_panic_restore() {
