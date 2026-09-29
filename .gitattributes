@@ -1,0 +1,2 @@
+# 黄金快照文件必须字节级精确，禁止 Windows checkout 时被转成 CRLF。
+crates/mrorcode-cli/tests/golden/headless-json.txt text eol=lf
