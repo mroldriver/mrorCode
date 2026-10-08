@@ -27,7 +27,8 @@ fn message_height(
         .iter()
         .map(|t| 1 + tool_card::extra_height(t, expanded.contains(t.id.as_str())))
         .sum();
-    reason + body + tools + 1
+    let bubble_pad = if matches!(m.role, Role::User) { 2 } else { 0 };
+    reason + body + tools + 1 + bubble_pad
 }
 
 /// 渲染主消息区。
@@ -158,6 +159,11 @@ fn render_message(
         }
     }
 
+    let (accent, body_bg) = match m.role {
+        Role::User => (theme.primary, theme.background_panel),
+        Role::Assistant => (theme.border_subtle, theme.background),
+    };
+
     let lines: Vec<Line<'static>> = {
         let mut lines = m.doc.lines(inner_width, gen, theme);
         if m.is_error {
@@ -167,20 +173,25 @@ fn render_message(
                 }
             }
         }
+        // 用户消息气泡：Span 必须带 bg，否则 set_line 会把整行背景重置掉
+        if matches!(m.role, Role::User) {
+            for line in &mut lines {
+                for span in &mut line.spans {
+                    span.style = span.style.bg(body_bg);
+                }
+            }
+        }
         lines
     };
 
-    let (accent, body_bg) = match m.role {
-        Role::User => (theme.primary, theme.background_panel),
-        Role::Assistant => (theme.border_subtle, theme.background),
-    };
+    let is_user = matches!(m.role, Role::User);
+    let pad_top = if is_user { 1 } else { 0 };
 
-    for (i, line) in lines.iter().enumerate() {
-        let y = row + i as u16;
+    // 渲染一行气泡（背景 + 左竖线），text 为 None 时只画背景
+    let mut render_bubble_row = |y: u16, text: Option<&Line<'static>>| {
         if y >= area.y + area.height {
-            break;
+            return;
         }
-        // 卡片背景 + 左竖线
         for x in area.x..area.x + width {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_style(Style::default().bg(body_bg));
@@ -190,10 +201,26 @@ fn render_message(
             cell.set_symbol("\u{2503}"); // ┃
             cell.set_style(Style::default().fg(accent).bg(body_bg));
         }
-        buf.set_line(area.x + 2, y, line, inner_width);
+        if let Some(line) = text {
+            buf.set_line(area.x + 2, y, line, inner_width);
+        }
+    };
+
+    // 顶部留白
+    if is_user {
+        render_bubble_row(row, None);
     }
 
-    let mut row = row + lines.len() as u16;
+    for (i, line) in lines.iter().enumerate() {
+        render_bubble_row(row + pad_top + i as u16, Some(line));
+    }
+
+    // 底部留白
+    if is_user {
+        render_bubble_row(row + pad_top + lines.len() as u16, None);
+    }
+
+    let mut row = row + pad_top + lines.len() as u16 + if is_user { 1 } else { 0 };
     for tool in &m.tools {
         let is_focused = focused.is_some_and(|f| f == tool.id);
         let is_expanded = expanded.contains(tool.id.as_str());

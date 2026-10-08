@@ -294,6 +294,25 @@ pub fn command_by_id(id: &str) -> Option<AppCommand> {
         .find_map(|c| (command_id(c.command) == id).then_some(c.command))
 }
 
+/// 把输入框中的 `/斜杠命令` 解析为 `AppCommand`。
+///
+/// 补全插入时用 `name.replace(' ', "-")`（如 `new session` → `/new-session`），
+/// 这里反向还原：去前缀 `/`、`-` 换回空格、按 registry 的 `name` 大小写不敏感匹配。
+/// 输入不是以 `/` 开头、或仅有 `/` 无命令名、或命令名不匹配时返回 `None`。
+pub fn parse_slash_command(text: &str) -> Option<AppCommand> {
+    let trimmed = text.trim();
+    let body = trimmed.strip_prefix('/')?;
+    if body.is_empty() {
+        return None;
+    }
+    // 补全插入时空格被替换为 `-`，反向还原；同时兼容用户直接输入带空格的形式。
+    let candidate = body.replace('-', " ").to_lowercase();
+    registry()
+        .iter()
+        .find(|c| c.name.to_lowercase() == candidate)
+        .map(|c| c.command)
+}
+
 /// 命令映射到 keymap 动作（help 反查真实键位用）。
 pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
     use crate::keymap::Action as A;
@@ -381,5 +400,56 @@ mod tests {
     #[test]
     fn unknown_id_returns_none() {
         assert!(command_by_id("nope").is_none());
+    }
+
+    #[test]
+    fn parse_slash_command_maps_hyphenated_names() {
+        assert_eq!(
+            parse_slash_command("/new-session"),
+            Some(AppCommand::NewSession)
+        );
+        assert_eq!(
+            parse_slash_command("/command-palette"),
+            Some(AppCommand::OpenCommandPalette)
+        );
+        assert_eq!(
+            parse_slash_command("/toggle-plan-mode"),
+            Some(AppCommand::TogglePlanMode)
+        );
+        assert_eq!(
+            parse_slash_command("/switch-provider"),
+            Some(AppCommand::SwitchProvider)
+        );
+    }
+
+    #[test]
+    fn parse_slash_command_is_case_insensitive_and_trims() {
+        assert_eq!(
+            parse_slash_command("  /NEW-SESSION  "),
+            Some(AppCommand::NewSession)
+        );
+        assert_eq!(parse_slash_command("/Help"), Some(AppCommand::OpenHelp));
+    }
+
+    #[test]
+    fn parse_slash_command_rejects_non_slash_and_unknown() {
+        assert!(parse_slash_command("hello world").is_none());
+        assert!(parse_slash_command("/").is_none());
+        assert!(parse_slash_command("/not-a-real-command").is_none());
+        // 多行文本首行不是斜杠命令时，整体作为普通消息
+        assert!(parse_slash_command("hello\n/new-session").is_none());
+    }
+
+    #[test]
+    fn every_registry_command_is_slash_parseable() {
+        for spec in registry() {
+            let slash = format!("/{}", spec.name.replace(' ', "-"));
+            assert_eq!(
+                parse_slash_command(&slash),
+                Some(spec.command),
+                "slash command `{slash}` should resolve to {:?}",
+                spec.command
+            );
+        }
     }
 }

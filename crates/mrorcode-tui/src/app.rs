@@ -585,6 +585,27 @@ fn apply_action(
             if state.toggle_focused_tool() {
                 return true;
             }
+            // 斜杠命令：提交时解析执行，不作为用户消息发送
+            let raw = state.prompt.lines().join("\n");
+            let trimmed = raw.trim();
+            if trimmed.starts_with('/') {
+                if state.phase.is_busy() {
+                    state.toast_warn("忙碌中无法执行命令");
+                    return true;
+                }
+                match commands::parse_slash_command(trimmed) {
+                    Some(cmd) => {
+                        execute_command(state, cmd, handle);
+                    }
+                    None => {
+                        state.toast_error(format!("未知命令：{trimmed}"));
+                    }
+                }
+                state.prompt.select_all();
+                state.prompt.delete_char();
+                state.draft.clear();
+                return true;
+            }
             state.submit_prompt(handle)
         }
         Newline => {
@@ -1132,8 +1153,10 @@ fn draw_session(
 ) {
     let show_sidebar = state.sidebar && area.width > 100;
     let sw = state.sidebar_width;
+    // 主内容区与侧栏之间留 1 列背景色间隔（对齐 opencode 视觉）
+    const SIDEBAR_GAP: u16 = 1;
     let main_width = if show_sidebar {
-        area.width - sw
+        area.width.saturating_sub(sw + SIDEBAR_GAP)
     } else {
         area.width
     };
@@ -1142,7 +1165,7 @@ fn draw_session(
         ..area
     };
     let side = ratatui::layout::Rect {
-        x: area.x + main_width,
+        x: area.x + main_width + SIDEBAR_GAP,
         y: area.y,
         width: if show_sidebar { sw } else { 0 },
         height: area.height,
@@ -2522,5 +2545,192 @@ mod tests {
         state.pending_provider_switch = Some(target.to_string());
         let mut h = handle.clone();
         apply_provider_switch(state, &mut h, events).await;
+    }
+
+    // ---------- 斜杠命令提交解析 ----------
+
+    #[tokio::test]
+    async fn slash_command_new_session_creates_session_not_message() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        let sessions_before = state.sessions.len();
+        let messages_before = state.messages.len();
+
+        // 输入 /new-session 并提交
+        state.prompt.insert_str("/new-session");
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+
+        // 新建了会话，但没有往消息流里插入用户消息
+        assert_eq!(state.sessions.len(), sessions_before + 1);
+        assert_eq!(state.messages.len(), messages_before);
+        // 输入框已清空
+        assert!(state.prompt.lines().join("\n").trim().is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn slash_command_unknown_shows_toast_and_clears_prompt() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        let messages_before = state.messages.len();
+
+        state.prompt.insert_str("/not-a-real-command");
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+
+        // 没有发送消息
+        assert_eq!(state.messages.len(), messages_before);
+        // toast 显示了错误
+        assert!(state
+            .current_toast
+            .as_ref()
+            .is_some_and(|t| t.0.contains("未知命令")));
+        // 输入框已清空
+        assert!(state.prompt.lines().join("\n").trim().is_empty());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn slash_command_blocked_while_busy() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.phase = Phase::Working;
+        let sessions_before = state.sessions.len();
+
+        state.prompt.insert_str("/new-session");
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+
+        // 忙碌中不执行命令
+        assert_eq!(state.sessions.len(), sessions_before);
+        assert!(state
+            .current_toast
+            .as_ref()
+            .is_some_and(|t| t.0.contains("忙碌中")));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn plain_text_starting_with_slash_in_multiline_is_sent_as_message() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        let messages_before = state.messages.len();
+
+        // 多行文本首行不是斜杠，整体作为普通消息发送
+        state.prompt.insert_str("hello\n/new-session");
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+
+        // 消息已发送（submit_prompt 会 push 一条用户消息）
+        assert_eq!(state.messages.len(), messages_before + 1);
+        handle.shutdown();
+    }
+
+    // ---------- Emacs 行内键位（tui-textarea-2 原生支持，验证不被 keymap 拦截） ----------
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn alt_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    #[tokio::test]
+    async fn emacs_ctrl_a_moves_to_line_start() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        assert_eq!(state.prompt.cursor(), (0, 11));
+        // 纯光标移动 input() 返回 false（未修改文本），但光标确实移动了
+        on_key(&mut state, &ctrl_key(KeyCode::Char('a')), &handle);
+        assert_eq!(state.prompt.cursor(), (0, 0));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_ctrl_e_moves_to_line_end() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        on_key(&mut state, &ctrl_key(KeyCode::Char('a')), &handle);
+        assert_eq!(state.prompt.cursor(), (0, 0));
+        on_key(&mut state, &ctrl_key(KeyCode::Char('e')), &handle);
+        assert_eq!(state.prompt.cursor(), (0, 11));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_ctrl_k_kills_to_end_of_line() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        on_key(&mut state, &ctrl_key(KeyCode::Char('a')), &handle);
+        for _ in 0..5 {
+            on_key(&mut state, &k(KeyCode::Right), &handle);
+        }
+        assert_eq!(state.prompt.cursor(), (0, 5));
+        assert!(on_key(&mut state, &ctrl_key(KeyCode::Char('k')), &handle));
+        assert_eq!(state.prompt.lines().join(""), "hello");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_ctrl_w_kills_previous_word() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        assert!(on_key(&mut state, &ctrl_key(KeyCode::Char('w')), &handle));
+        assert_eq!(state.prompt.lines().join(""), "hello ");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_alt_f_moves_forward_word() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        on_key(&mut state, &ctrl_key(KeyCode::Char('a')), &handle);
+        assert_eq!(state.prompt.cursor(), (0, 0));
+        on_key(&mut state, &alt_key(KeyCode::Char('f')), &handle);
+        assert_eq!(state.prompt.cursor(), (0, 6));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_alt_b_moves_backward_word() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        on_key(&mut state, &alt_key(KeyCode::Char('b')), &handle);
+        assert_eq!(state.prompt.cursor(), (0, 6));
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_alt_d_kills_next_word() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello world");
+        on_key(&mut state, &ctrl_key(KeyCode::Char('a')), &handle);
+        assert!(on_key(&mut state, &alt_key(KeyCode::Char('d')), &handle));
+        assert_eq!(state.prompt.lines().join(""), " world");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn emacs_ctrl_u_undo_and_ctrl_r_redo() {
+        let handle = noop_handle();
+        let mut state = test_state();
+        state.prompt.insert_str("hello");
+        assert_eq!(state.prompt.lines().join(""), "hello");
+        assert!(on_key(&mut state, &ctrl_key(KeyCode::Char('u')), &handle));
+        assert_eq!(state.prompt.lines().join(""), "");
+        assert!(on_key(&mut state, &ctrl_key(KeyCode::Char('r')), &handle));
+        assert_eq!(state.prompt.lines().join(""), "hello");
+        handle.shutdown();
+    }
+
+    /// 不需要真实 provider 的测试用占位 handle（ScriptedProvider 空脚本）。
+    fn noop_handle() -> RuntimeHandle {
+        let (h, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        h
     }
 }

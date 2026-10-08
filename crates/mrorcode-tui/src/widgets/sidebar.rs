@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Widget};
+use ratatui::widgets::{Block, Widget};
 
 use crate::store::AppState;
 use crate::theme::Theme;
@@ -26,9 +26,8 @@ pub fn render(
     theme: &Theme,
 ) -> Vec<crate::hit::HitRegion> {
     let mut hits = Vec::new();
+    // 无外边框：左侧靠 1 列背景色间隔与主内容区分（对齐 opencode）
     Block::default()
-        .borders(Borders::LEFT)
-        .border_style(Style::default().fg(theme.border))
         .style(Style::default().bg(theme.background_panel))
         .render(area, buf);
 

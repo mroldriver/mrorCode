@@ -250,7 +250,7 @@ impl AppState {
     ) -> Self {
         let sidebar = kv.data.sidebar.unwrap_or(true);
         let sidebar_width = kv.data.sidebar_width.unwrap_or(42).clamp(20, 80);
-        let show_tabs = kv.data.tabs.unwrap_or(true);
+        let show_tabs = kv.data.tabs.unwrap_or(false);
         let which_key_on = kv.data.which_key.unwrap_or(false);
         let which_key_layout = match kv.data.which_key_layout.as_deref() {
             Some("overlay") => crate::widgets::whichkey::WkLayout::Overlay,
@@ -275,13 +275,13 @@ impl AppState {
                 Mode::Dark => themes_dark.get(n).is_some(),
                 Mode::Light => themes_light.get(n).is_some(),
             })
-            .unwrap_or_else(|| "tokyonight".to_string());
+            .unwrap_or_else(|| "opencode".to_string());
         let theme = match theme_mode {
             Mode::Dark => themes_dark.get(&theme_name),
             Mode::Light => themes_light.get(&theme_name),
         }
         .cloned()
-        .unwrap_or_else(Theme::tokyonight);
+        .unwrap_or_else(Theme::opencode);
 
         let mut prompt = TextArea::new(vec![String::new()]);
         prompt.set_cursor_line_style(ratatui::style::Style::default());
@@ -385,14 +385,14 @@ impl AppState {
         }
     }
 
-    /// 切换 dark/light；当前主题在另一模式不存在时回退 tokyonight。
+    /// 切换 dark/light；当前主题在另一模式不存在时回退 opencode。
     pub fn set_theme_mode(&mut self, mode: Mode) {
         if mode == self.theme_mode {
             return;
         }
         self.theme_mode = mode;
         if !self.set_theme(&self.theme_name.clone()) {
-            self.set_theme("tokyonight");
+            self.set_theme("opencode");
         }
         // set_theme 已 bump gen 并保存；这里只需补齐 mode 字段
         self.kv.data.theme_mode = mode.as_str().to_string();

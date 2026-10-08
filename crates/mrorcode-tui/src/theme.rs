@@ -3,7 +3,7 @@
 //!
 //! 支持：`#hex` / defs 引用（含多级、循环检测）/ `{dark,light}` 双值 /
 //! `transparent`、`none`（回退内置默认）/ ANSI 数字。
-//! 缺 token 用内置 tokyonight 补齐，解析失败不阻塞启动。
+//! 缺 token 用内置 Ant Design 暗黑补齐，解析失败不阻塞启动。
 
 use std::collections::HashSet;
 
@@ -100,11 +100,176 @@ impl Mode {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::tokyonight()
+        Self::opencode()
     }
 }
 
 impl Theme {
+    /// 内置暗色兜底主题（严格参照 opencode TUI generateSystem，纯黑终端背景）。
+    ///
+    /// 色值来源：`packages/opencode/src/cli/cmd/run/theme.ts`
+    /// - `generateSystem()` 第 382–466 行：从终端调色板派生主题
+    /// - `generateGrayScale()` 第 328–367 行：纯黑背景 lum<10 时 grays[n]=floor(n/12*0.4*255)
+    /// - `generateMutedTextColor()` 第 369–380 行：纯黑背景时 gray=180
+    /// - `RUN_THEME_FALLBACK` 第 605–654 行：ANSI 颜色 fallback seed
+    pub fn opencode() -> Self {
+        // 纯黑背景下的灰度阶（generateGrayScale，lum=0 < 10）
+        // grays[n] = floor(n/12 * 0.4 * 255) = floor(n * 8.5)
+        let gray2 = Color::Rgb(0x11, 0x11, 0x11); // grays[2] = 17
+        let gray3 = Color::Rgb(0x19, 0x19, 0x19); // grays[3] = 25
+        let gray6 = Color::Rgb(0x33, 0x33, 0x33); // grays[6] = 51
+        let gray7 = Color::Rgb(0x3b, 0x3b, 0x3b); // grays[7] = 59
+        let gray8 = Color::Rgb(0x44, 0x44, 0x44); // grays[8] = 68
+
+        // ANSI 颜色（fallback seed，RUN_THEME_FALLBACK）
+        let ansi_cyan = Color::Rgb(0x38, 0xbd, 0xf8); // index 6 → primary/info
+        let ansi_magenta = Color::Rgb(0xc0, 0x84, 0xfc); // index 5 → secondary/syntax-keyword
+        let ansi_blue = Color::Rgb(0x3b, 0x82, 0xf6); // index 4 → markdown-link/syntax-function
+        let ansi_red = Color::Rgb(0xef, 0x44, 0x44); // index 1 → error
+        let ansi_green = Color::Rgb(0x22, 0xc5, 0x5e); // index 2 → success
+        let ansi_yellow = Color::Rgb(0xf5, 0x9e, 0x0b); // index 3 → warning
+        let ansi_green_bright = Color::Rgb(0x4a, 0xde, 0x80); // index 10
+        let ansi_red_bright = Color::Rgb(0xf8, 0x71, 0x71); // index 9
+
+        let text = Color::Rgb(0xf8, 0xfa, 0xfc); // seed.text → default foreground
+        let text_muted = Color::Rgb(0xb4, 0xb4, 0xb4); // generateMutedTextColor, gray=180
+
+        // diff 背景：tint(bg, color, 0.22)，纯黑背景
+        let diff_added_bg = Color::Rgb(0x07, 0x2b, 0x15);
+        let diff_removed_bg = Color::Rgb(0x35, 0x0f, 0x0f);
+        let diff_added_line_bg = Color::Rgb(0x15, 0x39, 0x22); // tint(grays[2], green, 0.22)
+        let diff_removed_line_bg = Color::Rgb(0x42, 0x1c, 0x1c); // tint(grays[2], red, 0.22)
+
+        Self {
+            primary: ansi_cyan,
+            secondary: ansi_magenta,
+            accent: ansi_cyan, // generateSystem: accent = primary
+            error: ansi_red,
+            warning: ansi_yellow,
+            success: ansi_green,
+            info: ansi_cyan,
+
+            text,
+            text_muted,
+            selected_text: Color::Rgb(0x00, 0x00, 0x00), // selectedListItemText = bg
+
+            background: Color::Rgb(0x00, 0x00, 0x00), // 终端原生背景（纯黑）
+            background_panel: gray2,    // grays[2]
+            background_element: gray3,  // grays[3]
+            background_menu: gray3,     // grays[3]
+
+            border: gray7,              // grays[7]
+            border_active: gray8,       // grays[8]
+            border_subtle: gray6,       // grays[6]
+
+            diff_added: ansi_green,
+            diff_removed: ansi_red,
+            diff_context: gray7,        // grays[7]
+            diff_hunk_header: gray7,    // grays[7]
+            diff_highlight_added: ansi_green_bright,
+            diff_highlight_removed: ansi_red_bright,
+            diff_added_bg,
+            diff_removed_bg,
+            diff_context_bg: gray2,     // grays[2]
+            diff_line_number: text_muted,
+            diff_added_line_number_bg: diff_added_line_bg,
+            diff_removed_line_number_bg: diff_removed_line_bg,
+
+            // Markdown（generateSystem 第 441–454 行）
+            md_text: text,
+            md_heading: text,
+            md_link: ansi_blue,
+            md_link_text: ansi_cyan,
+            md_code: ansi_green,
+            md_blockquote: ansi_yellow,
+            md_emph: ansi_yellow,
+            md_strong: text,
+            md_horizontal_rule: gray7,
+            md_list_item: ansi_blue,
+            md_list_enumeration: ansi_cyan,
+            md_image: ansi_blue,
+            md_image_text: ansi_cyan,
+            md_code_bg: gray2,          // 代码块背景 = panel
+            md_code_block: text,        // markdownCodeBlock = fg
+
+            // 语法高亮（generateSystem 第 455–463 行）
+            syntax_comment: text_muted,
+            syntax_keyword: ansi_magenta,
+            syntax_function: ansi_blue,
+            syntax_variable: text,
+            syntax_string: ansi_green,
+            syntax_number: ansi_yellow,
+            syntax_type: ansi_cyan,
+            syntax_operator: ansi_cyan,
+            syntax_punctuation: text,
+        }
+    }
+
+    /// 内置暗色兜底主题（Ant Design v5 暗黑模式调色板）。
+    pub fn ant_design() -> Self {
+        Self {
+            primary: Color::Rgb(0x16, 0x77, 0xff),
+            secondary: Color::Rgb(0x69, 0xb1, 0xff),
+            accent: Color::Rgb(0x40, 0x96, 0xff),
+            error: Color::Rgb(0xff, 0x4d, 0x4f),
+            warning: Color::Rgb(0xfa, 0xad, 0x14),
+            success: Color::Rgb(0x52, 0xc4, 0x1a),
+            info: Color::Rgb(0x16, 0x77, 0xff),
+
+            text: Color::Rgb(0xe0, 0xe0, 0xe0),
+            text_muted: Color::Rgb(0xa6, 0xa6, 0xa6),
+            selected_text: Color::Rgb(0x14, 0x14, 0x14),
+
+            background: Color::Rgb(0x14, 0x14, 0x14),
+            background_panel: Color::Rgb(0x1f, 0x1f, 0x1f),
+            background_element: Color::Rgb(0x26, 0x26, 0x26),
+            background_menu: Color::Rgb(0x1f, 0x1f, 0x1f),
+
+            border: Color::Rgb(0x42, 0x42, 0x42),
+            border_active: Color::Rgb(0x16, 0x77, 0xff),
+            border_subtle: Color::Rgb(0x30, 0x30, 0x30),
+
+            diff_added: Color::Rgb(0x52, 0xc4, 0x1a),
+            diff_removed: Color::Rgb(0xff, 0x4d, 0x4f),
+            diff_context: Color::Rgb(0x73, 0x73, 0x73),
+            diff_hunk_header: Color::Rgb(0x69, 0xb1, 0xff),
+            diff_highlight_added: Color::Rgb(0x26, 0x4d, 0x1a),
+            diff_highlight_removed: Color::Rgb(0x4d, 0x1a, 0x1d),
+            diff_added_bg: Color::Rgb(0x1a, 0x2e, 0x14),
+            diff_removed_bg: Color::Rgb(0x2e, 0x14, 0x17),
+            diff_context_bg: Color::Rgb(0x1f, 0x1f, 0x1f),
+            diff_line_number: Color::Rgb(0x73, 0x73, 0x73),
+            diff_added_line_number_bg: Color::Rgb(0x14, 0x24, 0x10),
+            diff_removed_line_number_bg: Color::Rgb(0x24, 0x10, 0x12),
+
+            md_text: Color::Rgb(0xe0, 0xe0, 0xe0),
+            md_heading: Color::Rgb(0x16, 0x77, 0xff),
+            md_link: Color::Rgb(0x16, 0x77, 0xff),
+            md_link_text: Color::Rgb(0x69, 0xb1, 0xff),
+            md_code: Color::Rgb(0xfa, 0xad, 0x14),
+            md_blockquote: Color::Rgb(0x73, 0x73, 0x73),
+            md_emph: Color::Rgb(0xfa, 0xad, 0x14),
+            md_strong: Color::Rgb(0x40, 0x96, 0xff),
+            md_horizontal_rule: Color::Rgb(0x30, 0x30, 0x30),
+            md_list_item: Color::Rgb(0x16, 0x77, 0xff),
+            md_list_enumeration: Color::Rgb(0x13, 0xc2, 0xc2),
+            md_image: Color::Rgb(0x16, 0x77, 0xff),
+            md_image_text: Color::Rgb(0x69, 0xb1, 0xff),
+            md_code_bg: Color::Rgb(0x26, 0x26, 0x26),
+            md_code_block: Color::Rgb(0x26, 0x26, 0x26),
+
+            syntax_comment: Color::Rgb(0x73, 0x73, 0x73),
+            syntax_keyword: Color::Rgb(0xeb, 0x2f, 0x96),
+            syntax_function: Color::Rgb(0x16, 0x77, 0xff),
+            syntax_variable: Color::Rgb(0xe0, 0xe0, 0xe0),
+            syntax_string: Color::Rgb(0x52, 0xc4, 0x1a),
+            syntax_number: Color::Rgb(0xfa, 0xad, 0x14),
+            syntax_type: Color::Rgb(0x13, 0xc2, 0xc2),
+            syntax_operator: Color::Rgb(0xa6, 0xa6, 0xa6),
+            syntax_punctuation: Color::Rgb(0xa6, 0xa6, 0xa6),
+        }
+    }
+
     /// 内置暗色兜底主题（参考 tokyonight night 调色板）。
     pub fn tokyonight() -> Self {
         Self {
@@ -251,7 +416,7 @@ pub fn parse(json_text: &str, mode: Mode) -> Option<Theme> {
     let root: Value = serde_json::from_str(json_text).ok()?;
     let theme_raw = root.get("theme")?;
     let defs = root.get("defs");
-    let mut theme = Theme::tokyonight();
+    let mut theme = Theme::opencode();
 
     let overlay = |field: &str, set: &mut dyn FnMut(Color)| {
         if let Some(v) = theme_raw.get(field) {
@@ -442,7 +607,7 @@ mod tests {
     fn transparent_and_unknown_fall_back_to_default() {
         let json = r##"{"theme":{"primary":"transparent","nonsenseToken":"#000000"}}"##;
         let t = parse(json, Mode::Dark).unwrap();
-        assert_eq!(t.primary, Theme::tokyonight().primary);
+        assert_eq!(t.primary, Theme::opencode().primary);
     }
 
     #[test]
@@ -452,7 +617,7 @@ mod tests {
             "theme": {"primary": "a"}
         }"#;
         let t = parse(json, Mode::Dark).unwrap();
-        assert_eq!(t.primary, Theme::tokyonight().primary);
+        assert_eq!(t.primary, Theme::opencode().primary);
     }
 
     #[test]
