@@ -35,6 +35,8 @@ fn ctx<'a>(
         working_dir,
         cancel,
         request,
+        tool_id: "",
+        event_sink: None,
     }
 }
 

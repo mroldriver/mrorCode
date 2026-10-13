@@ -7,9 +7,7 @@
 use std::io::{self, Stdout};
 use std::time::Duration;
 
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers, MouseEvent,
-};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -30,7 +28,7 @@ use crate::commands::{self, AppCommand};
 use crate::store::{AppState, Route};
 use crate::theme::Theme;
 use crate::widgets::dialog::{self, DialogOutcome, SelectPurpose};
-use crate::widgets::{home, permission, prompt, session, sidebar, tabs, toast, whichkey};
+use crate::widgets::{home, permission, prompt, session, sidebar, toast, whichkey};
 
 const RENDER_COALESCE: Duration = Duration::from_millis(8);
 const SPINNER_TICK: Duration = Duration::from_millis(100);
@@ -39,13 +37,16 @@ const CURSOR_BLINK_TICK: Duration = Duration::from_millis(600);
 /// 关停旧 runtime 时等待 Exited 的兜底超时。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 输入线程 → 主循环的统一输入事件（M4：键/鼠标/粘贴分流）。
+/// 输入线程 → 主循环的统一输入事件（M4：键/粘贴分流）。
 #[derive(Clone, Debug)]
 pub enum InputEvent {
     Key(KeyEvent),
-    Mouse(MouseEvent),
     /// 终端粘贴（crossterm bracketed paste），文本原样交给输入框。
     Paste(String),
+    /// 终端窗口获得焦点。
+    FocusGained,
+    /// 终端窗口失去焦点。
+    FocusLost,
 }
 
 /// TUI 入口。`resume` 为要恢复的会话 id（来自 `--resume`）。
@@ -303,9 +304,14 @@ fn spawn_input_thread() -> (std::thread::JoinHandle<()>, UnboundedReceiver<Input
     // 阻塞式 crossterm 读取线程（poll/read 不占 CPU）
     let handle = std::thread::spawn(move || loop {
         let input = match event::read() {
+            // Windows 控制台对同一物理键会同时下发 Press（按下）与 Release（松开），
+            // 且长按自动重复也全部以 Press 上报（无 Repeat 类型）。
+            // 若不过滤，一次方向键敲击会被 on_key 执行两次（按下一次 + 松开一次）。
+            Ok(event::Event::Key(k)) if k.kind != KeyEventKind::Press => continue,
             Ok(event::Event::Key(k)) => InputEvent::Key(k),
-            Ok(event::Event::Mouse(m)) => InputEvent::Mouse(m),
             Ok(event::Event::Paste(s)) => InputEvent::Paste(s),
+            Ok(event::Event::FocusGained) => InputEvent::FocusGained,
+            Ok(event::Event::FocusLost) => InputEvent::FocusLost,
             Ok(_) => continue,
             Err(_) => break,
         };
@@ -324,8 +330,15 @@ fn on_input(
 ) -> bool {
     match input {
         InputEvent::Key(key) => on_key(state, key, handle),
-        InputEvent::Mouse(mouse) => on_mouse(state, mouse, handle),
         InputEvent::Paste(text) => on_paste(state, text),
+        InputEvent::FocusGained => {
+            state.terminal_focused = true;
+            false
+        }
+        InputEvent::FocusLost => {
+            state.terminal_focused = false;
+            false
+        }
     }
 }
 
@@ -335,6 +348,15 @@ fn on_paste(state: &mut AppState, text: &str) -> bool {
         return false;
     }
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    // 检测单文件路径粘贴（图片/PDF）：自动转为 @path 附件引用
+    let trimmed = normalized.trim();
+    if is_attachment_path(trimmed) {
+        let reference = format!("@{trimmed} ");
+        state.prompt.insert_str(&reference);
+        state.refresh_completion();
+        state.toast(format!("已附加文件：{trimmed}"));
+        return true;
+    }
     for (i, line) in normalized.split('\n').enumerate() {
         if i > 0 {
             state.prompt.insert_newline();
@@ -345,82 +367,20 @@ fn on_paste(state: &mut AppState, text: &str) -> bool {
     true
 }
 
-/// 鼠标事件：滚轮滚动消息区、点击命中区域（M4-5）。
-fn on_mouse(
-    state: &mut AppState,
-    mouse: &MouseEvent,
-    _handle: &mrorcode_agent::RuntimeHandle,
-) -> bool {
-    use crossterm::event::{MouseButton, MouseEventKind};
-    match mouse.kind {
-        MouseEventKind::ScrollUp => {
-            if state.route == Route::Session {
-                state.scroll_up(3);
-                true
-            } else {
-                false
-            }
-        }
-        MouseEventKind::ScrollDown => {
-            if state.route == Route::Session {
-                state.scroll_down(3);
-                true
-            } else {
-                false
-            }
-        }
-        MouseEventKind::Down(MouseButton::Left) => {
-            // 优先命中原生控件（标签/侧栏/工具卡/思考块/diff）
-            if let Some(target) = crate::hit::hit_test(&state.hit_regions, mouse.column, mouse.row)
-            {
-                return match target {
-                    crate::hit::HitTarget::Session(id) => state.switch_session(id),
-                    crate::hit::HitTarget::CloseSession(id) => {
-                        state.delete_session(id);
-                        true
-                    }
-                    crate::hit::HitTarget::Tool(id) => {
-                        state.focused_tool = Some(id.clone());
-                        state.toggle_focused_tool();
-                        true
-                    }
-                    crate::hit::HitTarget::Reasoning(uid) => state.toggle_reasoning(uid),
-                    crate::hit::HitTarget::Diff(id) => {
-                        state.focused_tool = Some(id);
-                        state.open_focused_diff()
-                    }
-                    crate::hit::HitTarget::SidebarSection(title) => {
-                        state.toggle_section(&title);
-                        true
-                    }
-                };
-            }
-            // 否则视为文本拖选
-            state.begin_selection(mouse.column, mouse.row);
-            state.select_mode = true;
-            true
-        }
-        MouseEventKind::Drag(MouseButton::Left) => {
-            if state.select_mode {
-                state.extend_selection(mouse.column, mouse.row);
-                true
-            } else {
-                false
-            }
-        }
-        MouseEventKind::Up(MouseButton::Left) => {
-            // 拖拽结束：保留选区供 y 复制；无实际范围的单击清掉
-            if let Some(sel) = state.selection {
-                let (a, b) = sel.bounds();
-                if a == b {
-                    state.clear_selection();
-                    state.select_mode = false;
-                }
-            }
-            true
-        }
-        _ => false,
+/// 判断粘贴的文本是否是单个图片/PDF 文件路径（用于自动附加）。
+fn is_attachment_path(text: &str) -> bool {
+    if text.is_empty() || text.contains('\n') {
+        return false;
     }
+    let lower = text.to_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".svg")
+        || lower.ends_with(".pdf")
 }
 
 /// 键盘选择模式：方向键移动光标、y 复制、esc/q 退出（M4-6）。
@@ -463,12 +423,26 @@ fn handle_select_key(state: &mut AppState, key: &KeyEvent) -> bool {
 
 /// 处理一个按键；返回是否需要重绘。
 fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::RuntimeHandle) -> bool {
-    // modal 层：审批弹窗优先吃键
+    // modal 层：审批弹窗优先吃键（上下选择 + 回车确认，y/a/n 为快捷键）
     if state.permission.is_some() {
         match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.permission_cursor = (state.permission_cursor + 2) % 3;
+                return true;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.permission_cursor = (state.permission_cursor + 1) % 3;
+                return true;
+            }
+            KeyCode::Enter => {
+                let decision = ["allow", "allow_always", "deny"][state.permission_cursor];
+                state.resolve_permission(decision, handle);
+                return true;
+            }
             KeyCode::Char('y') => state.resolve_permission("allow", handle),
             KeyCode::Char('a') => state.resolve_permission("allow_always", handle),
-            KeyCode::Char('n') | KeyCode::Esc => state.resolve_permission("deny", handle),
+            KeyCode::Char('n') => state.resolve_permission("deny", handle),
+            KeyCode::Esc => state.resolve_permission("deny", handle),
             _ => return false,
         }
         return true;
@@ -491,6 +465,25 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
             DialogOutcome::Confirmed(action) => {
                 state.pop_dialog();
                 apply_confirm(state, action);
+                true
+            }
+            DialogOutcome::InputSubmitted(purpose, text) => {
+                state.pop_dialog();
+                apply_input(state, purpose, text);
+                true
+            }
+            DialogOutcome::TimelineRewind(msg_index) => {
+                state.pop_dialog();
+                // timeline 回退：保留选中消息及之前的内容
+                // 计算需要保留的 user turn 数（与 kernel rewind 语义一致）
+                let keep_turns = state.messages[..=msg_index]
+                    .iter()
+                    .filter(|m| matches!(m.role, crate::store::Role::User))
+                    .count();
+                if keep_turns > 0 {
+                    state.rewind_to(keep_turns, handle);
+                    state.toast(format!("已回退到消息 #{msg_index} 之后"));
+                }
                 true
             }
         };
@@ -523,6 +516,17 @@ fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::Runtime
                 return true;
             }
             KeyCode::Tab | KeyCode::Enter => {
+                // 若当前行已是完整可解析的斜杠命令，不再当作“再接受一次补全”，
+                // 而是关闭弹层并落到 Submit（如 /quit 后回车直接执行，避免被补全弹层吞掉）。
+                if key.code == KeyCode::Enter {
+                    let raw = state.prompt.lines().join("\n");
+                    let trimmed = raw.trim();
+                    if trimmed.starts_with('/') && commands::parse_slash_command(trimmed).is_some()
+                    {
+                        state.clear_completion();
+                        return false;
+                    }
+                }
                 if state.accept_completion() {
                     return true;
                 }
@@ -658,6 +662,10 @@ fn apply_action(
             });
             true
         }
+        RenameSession => {
+            state.open_rename_dialog();
+            true
+        }
         ExportTranscript => match state.export_transcript() {
             Ok(path) => {
                 state.toast(format!("已导出：{}", path.display()));
@@ -681,7 +689,8 @@ fn apply_action(
             true
         }
         ScrollUp => {
-            if state.route == Route::Session {
+            // 输入框为空才滚聊天；有内容时落给 textarea 移光标（多行编辑）
+            if state.route == Route::Session && input_is_empty(state) {
                 state.scroll_up(state.viewport_lines / 2 + 1);
                 true
             } else {
@@ -689,15 +698,15 @@ fn apply_action(
             }
         }
         ScrollDown => {
-            if state.route == Route::Session {
+            if state.route == Route::Session && input_is_empty(state) {
                 state.scroll_down(state.viewport_lines / 2 + 1);
                 true
             } else {
                 false
             }
         }
-        HistoryPrev => history_key(state, KeyCode::Up),
-        HistoryNext => history_key(state, KeyCode::Down),
+        HistoryPrev => history_prev(state),
+        HistoryNext => history_next(state),
         FocusNextTool => {
             state.cycle_tool_focus(true);
             true
@@ -751,9 +760,10 @@ fn apply_action(
             true
         }
         ToggleReasoning => state.toggle_last_reasoning(),
-        OpenDiffViewer => state.open_focused_diff(),
-        ToggleTabs => {
-            state.toggle_tabs();
+        OpenDiffViewer => {
+            if !state.open_focused_diff() {
+                state.open_diff_source_picker();
+            }
             true
         }
         NextSession => state.cycle_session(true),
@@ -789,6 +799,25 @@ fn apply_action(
         }
         NewSession => {
             state.new_session();
+            true
+        }
+        BackgroundTask => {
+            // agent 运行时：新建会话并切换，当前任务在后台继续（不取消）
+            if state.phase.is_busy() {
+                let old_id = state.active_session;
+                state.new_session();
+                state.toast(format!(
+                    "任务已在后台运行（会话 #{old_id}），已切换到新会话"
+                ));
+            } else {
+                state.toast("当前没有运行中的任务");
+            }
+            true
+        }
+        OpenTimeline => {
+            if !state.open_timeline() {
+                state.toast("当前会话没有消息");
+            }
             true
         }
         ListSessions => {
@@ -871,7 +900,72 @@ fn apply_select(
                 state.pending_provider_switch = Some(value);
             }
         }
+        SelectPurpose::DiffSource => {
+            open_diff_from_source(state, &value);
+        }
     }
+}
+
+/// 根据选择的数据源打开独立 diff viewer。
+fn open_diff_from_source(state: &mut AppState, source: &str) {
+    let cwd = state.working_dir.clone();
+    match source {
+        "git" => {
+            let output = run_git(&cwd, &["diff", "--no-color"]);
+            match crate::widgets::dialog::DiffState::from_output("git diff", &output) {
+                Some(diff) => state.push_dialog(dialog::Dialog::Diff(diff)),
+                None => state.open_alert("git diff", "没有可显示的改动（工作区干净）"),
+            }
+        }
+        "branch" => {
+            let main_branch = detect_main_branch(&cwd);
+            let args = format!("{}...HEAD", main_branch);
+            let output = run_git(&cwd, &["diff", "--no-color", &args]);
+            let title = format!("branch diff ({main_branch}...HEAD)");
+            match crate::widgets::dialog::DiffState::from_output(&title, &output) {
+                Some(diff) => state.push_dialog(dialog::Dialog::Diff(diff)),
+                None => state.open_alert("branch diff", "当前分支与主分支无差异"),
+            }
+        }
+        "last-turn" => match state.collect_last_turn_diff() {
+            Some(output) => {
+                match crate::widgets::dialog::DiffState::from_output("last turn", &output) {
+                    Some(diff) => state.push_dialog(dialog::Dialog::Diff(diff)),
+                    None => state.open_alert("last turn", "上一轮没有文件改动"),
+                }
+            }
+            None => state.open_alert("last turn", "上一轮没有文件改动"),
+        },
+        _ => {}
+    }
+}
+
+/// 执行 git 命令并返回 stdout（失败时返回空串）。
+fn run_git(cwd: &std::path::Path, args: &[&str]) -> String {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// 检测仓库主分支名（main 或 master），默认 main。
+fn detect_main_branch(cwd: &std::path::Path) -> String {
+    for candidate in &["main", "master"] {
+        let ok = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", candidate])
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return candidate.to_string();
+        }
+    }
+    "main".to_string()
 }
 
 /// Confirm 对话框确认后的动作分派。
@@ -880,6 +974,16 @@ fn apply_confirm(state: &mut AppState, action: dialog::ConfirmAction) {
         dialog::ConfirmAction::DeleteSession(id) => {
             state.delete_history_session(id);
             state.toast("会话已删除");
+        }
+    }
+}
+
+/// 输入对话框提交后的动作分派。
+fn apply_input(state: &mut AppState, purpose: dialog::InputPurpose, text: String) {
+    match purpose {
+        dialog::InputPurpose::RenameSession => {
+            state.rename_active_session(&text);
+            state.toast("会话已重命名");
         }
     }
 }
@@ -905,13 +1009,10 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         }
         AppCommand::OpenDiffViewer => {
             if !state.open_focused_diff() {
-                state.open_alert(
-                    "diff",
-                    "当前没有聚焦的 diff 工具卡（先 Tab 聚焦含 diff 的工具）",
-                );
+                // 无聚焦 diff 工具卡时，打开独立 diff viewer 的数据源选择器
+                state.open_diff_source_picker();
             }
         }
-        AppCommand::ToggleTabs => state.toggle_tabs(),
         AppCommand::SelectText => {
             state.select_mode = true;
         }
@@ -920,6 +1021,25 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         }
         AppCommand::PinSession => {
             state.toggle_pin_active();
+        }
+        AppCommand::RenameSession => {
+            state.open_rename_dialog();
+        }
+        AppCommand::BackgroundTask => {
+            if state.phase.is_busy() {
+                let old_id = state.active_session;
+                state.new_session();
+                state.toast(format!(
+                    "任务已在后台运行（会话 #{old_id}），已切换到新会话"
+                ));
+            } else {
+                state.toast("当前没有运行中的任务");
+            }
+        }
+        AppCommand::OpenTimeline => {
+            if !state.open_timeline() {
+                state.toast("当前会话没有消息");
+            }
         }
         AppCommand::ExportTranscript => match state.export_transcript() {
             Ok(path) => {
@@ -955,38 +1075,38 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
     }
 }
 
-/// 历史浏览：光标在首行首列（Up）或末行末列（Down）时触发，返回是否拦截。
-fn history_key(state: &mut AppState, code: KeyCode) -> bool {
-    let (row, col) = state.prompt.cursor();
-    let line_count = state.prompt.lines().len();
-    match code {
-        KeyCode::Up if row == 0 && col == 0 && !state.history.is_empty() => {
-            let next = match state.hist_idx {
-                None => state.history.len() - 1,
-                Some(0) => 0,
-                Some(i) => i - 1,
-            };
-            if state.hist_idx.is_none() {
-                state.draft = state.prompt.lines().join("\n");
-            }
-            state.hist_idx = Some(next);
-            restore_into_prompt(state, state.history[next].clone());
-            true
-        }
-        KeyCode::Down if state.hist_idx.is_some() && row == line_count - 1 => {
-            let i = state.hist_idx.unwrap();
-            if i + 1 >= state.history.len() {
-                state.hist_idx = None;
-                let draft = std::mem::take(&mut state.draft);
-                restore_into_prompt(state, draft);
-            } else {
-                state.hist_idx = Some(i + 1);
-                restore_into_prompt(state, state.history[i + 1].clone());
-            }
-            true
-        }
-        _ => false,
+/// 输入历史浏览：Ctrl+P 上一条 / Ctrl+N 下一条（不依赖光标位置）。
+/// Ctrl+N 在翻到最新一条后退出浏览并恢复草稿。
+fn history_prev(state: &mut AppState) -> bool {
+    if state.history.is_empty() {
+        return false;
     }
+    let next = match state.hist_idx {
+        None => state.history.len() - 1,
+        Some(0) => 0,
+        Some(i) => i - 1,
+    };
+    if state.hist_idx.is_none() {
+        state.draft = state.prompt.lines().join("\n");
+    }
+    state.hist_idx = Some(next);
+    restore_into_prompt(state, state.history[next].clone());
+    true
+}
+
+fn history_next(state: &mut AppState) -> bool {
+    let Some(i) = state.hist_idx else {
+        return false;
+    };
+    if i + 1 >= state.history.len() {
+        state.hist_idx = None;
+        let draft = std::mem::take(&mut state.draft);
+        restore_into_prompt(state, draft);
+    } else {
+        state.hist_idx = Some(i + 1);
+        restore_into_prompt(state, state.history[i + 1].clone());
+    }
+    true
 }
 
 fn restore_into_prompt(state: &mut AppState, text: String) {
@@ -1064,7 +1184,6 @@ fn draw(f: &mut Frame<'_>, state: &mut AppState) {
     let theme = state.theme.clone();
     // 每帧按当前闪烁态/主题同步光标样式（覆盖主题切换等外部改动）
     prompt::sync_cursor_style(state, &theme);
-    state.hit_regions.clear();
     let area = f.area();
     state.screen = area;
     // 整屏背景
@@ -1151,63 +1270,74 @@ fn draw_session(
     theme: &Theme,
     area: ratatui::layout::Rect,
 ) {
-    let show_sidebar = state.sidebar && area.width > 100;
+    // 对齐 opencode：宽 >120 内联侧栏；≤120 时侧栏作浮层覆盖主内容右侧（不挤压主区）
+    const SIDEBAR_INLINE_THRESHOLD: u16 = 120;
+    let sidebar_wanted = state.sidebar;
+    let inline_sidebar = sidebar_wanted && area.width > SIDEBAR_INLINE_THRESHOLD;
+    let overlay_sidebar = sidebar_wanted && area.width <= SIDEBAR_INLINE_THRESHOLD;
     let sw = state.sidebar_width;
     // 主内容区与侧栏之间留 1 列背景色间隔（对齐 opencode 视觉）
     const SIDEBAR_GAP: u16 = 1;
-    let main_width = if show_sidebar {
+    // 顶部留白行（对齐 opencode：主区与侧栏上方各留一行空白 padding）
+    const HEADER_H: u16 = 1;
+    // 主内容区左右各 1 列内边距（内容不贴屏幕边缘）
+    const CONTENT_PAD: u16 = 1;
+    let main_width = if inline_sidebar {
         area.width.saturating_sub(sw + SIDEBAR_GAP)
     } else {
         area.width
     };
+    // 主区整体内缩：顶部 HEADER_H 行 + 左右 CONTENT_PAD 列
     let main = ratatui::layout::Rect {
-        width: main_width,
-        ..area
+        x: area.x + CONTENT_PAD,
+        y: area.y + HEADER_H,
+        width: main_width.saturating_sub(CONTENT_PAD * 2),
+        height: area.height.saturating_sub(HEADER_H),
     };
     let side = ratatui::layout::Rect {
-        x: area.x + main_width + SIDEBAR_GAP,
-        y: area.y,
-        width: if show_sidebar { sw } else { 0 },
-        height: area.height,
+        x: if inline_sidebar {
+            area.x + main_width + SIDEBAR_GAP
+        } else {
+            // 浮层：贴右边缘，覆盖在主内容之上
+            area.x + area.width.saturating_sub(sw)
+        },
+        y: area.y + HEADER_H,
+        width: sw,
+        height: area.height.saturating_sub(HEADER_H),
     };
 
     let prompt_h = prompt::content_height(state, area.height) + 2;
-    let show_tabs = state.show_tabs && area.height > 6;
-    let tab_h = if show_tabs { tabs::HEIGHT } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(tab_h),
             Constraint::Min(3),
             Constraint::Length(prompt_h),
             Constraint::Length(1),
         ])
         .split(main);
 
-    if show_tabs {
-        state.tab_hits = tabs::render(state, chunks[0], f.buffer_mut(), theme);
-        for hit in &state.tab_hits {
-            state.hit_regions.push(crate::hit::HitRegion {
-                rect: hit.rect,
-                target: crate::hit::HitTarget::Session(hit.session_id),
-            });
-        }
-    } else {
-        state.tab_hits.clear();
-    }
-
-    session::render(state, chunks[1], f.buffer_mut(), theme);
-    prompt::render_prompt(state, chunks[2], f.buffer_mut(), theme);
+    session::render(state, chunks[0], f.buffer_mut(), theme);
+    prompt::render_prompt(state, chunks[1], f.buffer_mut(), theme);
     if let Some(comp) = state.completion.as_ref().filter(|c| c.visible()) {
-        crate::input::render(comp, chunks[2], f.buffer_mut(), theme);
+        crate::input::render(comp, chunks[1], f.buffer_mut(), theme);
     }
     let meta = prompt::meta_line(state, theme);
     f.buffer_mut()
-        .set_line(chunks[3].x, chunks[3].y, &meta, chunks[3].width);
+        .set_line(chunks[2].x, chunks[2].y, &meta, chunks[2].width);
 
-    if show_sidebar {
-        let side_hits = sidebar::render(state, side, f.buffer_mut(), theme);
-        state.hit_regions.extend(side_hits);
+    if inline_sidebar || overlay_sidebar {
+        if overlay_sidebar {
+            // 浮层遮罩：用主题背景色盖住侧栏底下的内容（跟随主题，模拟 opencode 的 alpha 70 底）
+            let overlay_color = theme.background;
+            for y in side.y..side.y + side.height {
+                for x in side.x..side.x + side.width {
+                    if let Some(cell) = f.buffer_mut().cell_mut((x, y)) {
+                        cell.set_style(ratatui::style::Style::default().bg(overlay_color));
+                    }
+                }
+            }
+        }
+        sidebar::render(state, side, f.buffer_mut(), theme);
     }
 }
 
@@ -1218,7 +1348,7 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 fn setup_terminal() -> anyhow::Result<Term> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
@@ -1226,7 +1356,7 @@ fn setup_terminal() -> anyhow::Result<Term> {
 
 fn shutdown_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
 }
 
 /// 恢复终端 → 在 $EDITOR 中编辑临时文件 → 回读 → 重建终端。
@@ -1562,6 +1692,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn narrow_screen_renders_sidebar_as_overlay() {
+        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
+        let mut state = test_state();
+        state.sidebar = true;
+        // 进入会话页
+        on_key(&mut state, &k(KeyCode::Char('h')), &handle);
+        assert!(on_key(&mut state, &k(KeyCode::Enter), &handle));
+        assert_eq!(state.route, Route::Session);
+
+        // 窄屏（宽 100 ≤ 120 阈值）：侧栏作为浮层渲染，主内容不被挤压
+        let mut narrow = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        narrow.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&narrow, "mrorcode"));
+        // 浮层侧栏贴右边缘：侧栏标题 "mrorcode" 应在 x≈59（100-42+1）、y=2（顶部留白+侧栏内 padding）
+        let buf_narrow = narrow.backend().buffer();
+        let mut found_overlay = false;
+        for x in 55..65 {
+            if let Some(cell) = buf_narrow.cell((x, 2)) {
+                if cell.symbol() == "m" {
+                    found_overlay = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            found_overlay,
+            "sidebar title should appear in overlay region at right edge"
+        );
+
+        // 宽屏（宽 140 > 120）：侧栏内联渲染
+        let mut wide = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        wide.draw(|f| draw(f, &mut state)).unwrap();
+        assert!(buffer_contains(&wide, "mrorcode"));
+        // 内联侧栏标题应在 x≈98（140-42+1-1）、y=2（顶部留白+侧栏内 padding）
+        let buf_wide = wide.backend().buffer();
+        let mut found_inline = false;
+        for x in 94..104 {
+            if let Some(cell) = buf_wide.cell((x, 2)) {
+                if cell.symbol() == "m" {
+                    found_inline = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            found_inline,
+            "sidebar title should appear in inline region at right edge"
+        );
+        handle.shutdown();
+    }
+
+    #[tokio::test]
     async fn unknown_leader_second_key_is_swallowed() {
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
         let mut state = test_state();
@@ -1808,49 +1990,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mouse_click_tab_switch_updates_rendered_content() {
-        use crate::store::MessageView;
-        use crossterm::event::{MouseEvent, MouseEventKind};
-        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut state = test_state();
-
-        state.route = Route::Session;
-        state
-            .messages
-            .push(MessageView::user(1, "ALPHA内容".into()));
-        state.sessions[0].title = "alpha".into();
-        state.new_session();
-        state.route = Route::Session;
-        state.messages.push(MessageView::user(2, "BETA内容".into()));
-        state.sessions[1].title = "beta".into();
-        term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&term, "BETA"));
-
-        // 找到会话 1 标签的命中坐标，模拟鼠标点击
-        let hit = state
-            .tab_hits
-            .iter()
-            .find(|h| h.session_id == 1)
-            .expect("tab hit for session 1");
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
-            column: hit.rect.x,
-            row: hit.rect.y,
-            modifiers: KeyModifiers::NONE,
-        };
-        assert!(on_mouse(&mut state, &click, &handle));
-        assert_eq!(state.active_session, 1);
-        term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(
-            buffer_contains(&term, "ALPHA"),
-            "clicked tab must render ALPHA"
-        );
-        assert!(!buffer_contains(&term, "BETA"));
-        handle.shutdown();
-    }
-
-    #[tokio::test]
     async fn leader_number_switch_updates_rendered_content() {
         use crate::store::MessageView;
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
@@ -1973,7 +2112,7 @@ mod tests {
         if let Dialog::Select(s) = &state.dialogs[0] {
             use crate::widgets::dialog::select::SelectPurpose as P;
             assert_eq!(s.purpose(), P::Theme);
-            assert!(s.len() >= 30, "33 个 vendored 主题应可选");
+            assert!(!s.is_empty(), "内置 opencode 主题应可选");
         }
         handle.shutdown();
     }
@@ -1986,7 +2125,7 @@ mod tests {
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut state = test_state();
-        let items = vec!["nord", "dracula", "tokyonight"]
+        let items = vec!["opencode", "dracula", "tokyonight"]
             .into_iter()
             .map(|n| SelectItem {
                 label: n.into(),
@@ -2001,95 +2140,22 @@ mod tests {
             items,
         )));
 
-        for ch in "nor".chars() {
+        for ch in "op".chars() {
             on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
         }
         term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&term, "nord"));
+        assert!(buffer_contains(&term, "opencode"));
         assert!(!buffer_contains(&term, "dracula"));
 
         // Enter 应用、对话框出栈、KV 记住
         on_key(&mut state, &k(KeyCode::Enter), &handle);
         assert!(state.dialogs.is_empty());
-        assert_eq!(state.theme_name, "nord");
-        assert_eq!(state.kv.data.theme.as_deref(), Some("nord"));
+        assert_eq!(state.theme_name, "opencode");
+        assert_eq!(state.kv.data.theme.as_deref(), Some("opencode"));
 
         // Esc 在无对话框空闲时不再退出（避免误触），仅被吞掉
         on_key(&mut state, &k(KeyCode::Esc), &handle);
         assert!(!state.should_quit);
-        handle.shutdown();
-    }
-
-    #[tokio::test]
-    async fn mouse_click_switches_session_and_scrolls() {
-        use crate::store::MessageView;
-        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut state = test_state();
-        state.route = Route::Session;
-        state.messages.push(MessageView::user(1, "alpha".into()));
-        state.sessions[0].title = "alpha".into();
-        state.new_session();
-        state.route = Route::Session;
-        state.messages.push(MessageView::user(2, "beta".into()));
-        state.sessions[1].title = "beta".into();
-
-        term.draw(|f| draw(f, &mut state)).unwrap();
-        // 点击第一个标签 -> 切到会话 1
-        let target = state.tab_hits[0].rect;
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: target.x + 1,
-            row: target.y,
-            modifiers: KeyModifiers::NONE,
-        };
-        assert!(on_mouse(&mut state, &click, &handle));
-        assert_eq!(state.active_session, 1);
-
-        // 滚轮上滚 -> 脱离粘底
-        let scroll = MouseEvent {
-            kind: MouseEventKind::ScrollUp,
-            column: 10,
-            row: 10,
-            modifiers: KeyModifiers::NONE,
-        };
-        on_mouse(&mut state, &scroll, &handle);
-        assert!(!state.stick_bottom || state.backscroll > 0);
-        handle.shutdown();
-    }
-
-    #[tokio::test]
-    async fn tab_bar_renders_sessions_and_cycles() {
-        use crate::store::MessageView;
-        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut state = test_state();
-        state.route = Route::Session;
-        state.messages.push(MessageView::user(1, "alpha".into()));
-        state.sessions[0].title = "alpha".into();
-        state.new_session();
-        state.route = Route::Session;
-        state.messages.push(MessageView::user(2, "beta".into()));
-        state.sessions[1].title = "beta".into();
-
-        term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&term, "alpha"));
-        assert!(buffer_contains(&term, "beta"));
-        assert_eq!(state.tab_hits.len(), 2);
-
-        // ctrl+tab 切回第一个（从第二个循环回到第一个）
-        on_key(
-            &mut state,
-            &KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL),
-            &handle,
-        );
-        assert_eq!(state.active_session, 1);
-
-        // 关闭标签栏：不再渲染 tab 行
-        state.toggle_tabs();
-        term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(state.tab_hits.is_empty());
         handle.shutdown();
     }
 
@@ -2142,6 +2208,8 @@ mod tests {
             output:
                 "Edited a.rs (1 replacement(s))\n--- a.rs\n+++ a.rs\n@@ -1 +1 @@\n-old();\n+new();"
                     .into(),
+            sub_agent_text: String::new(),
+            sub_agent_tools: Vec::new(),
         });
         state.messages.push(m);
         state.focused_tool = Some("d1".into());

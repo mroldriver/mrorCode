@@ -95,8 +95,6 @@ pub enum Action {
     ToggleReasoning,
     /// 打开当前聚焦工具卡的 diff viewer（M4-3）。
     OpenDiffViewer,
-    /// 切换多会话标签栏（M4-4）。
-    ToggleTabs,
     /// 前后切换会话标签（M4-4）。
     NextSession,
     PrevSession,
@@ -107,6 +105,12 @@ pub enum Action {
     Rewind,
     /// 固定/取消固定当前会话。
     PinSession,
+    /// 重命名当前会话（对齐 opencode ctrl+r）。
+    RenameSession,
+    /// 后台运行当前任务（ctrl+b）：agent 运行时新建会话，当前任务在后台继续。
+    BackgroundTask,
+    /// 打开消息时间线对话框（P2-9）。
+    OpenTimeline,
     /// 导出当前会话为 Markdown 文件。
     ExportTranscript,
     /// 加宽/缩窄侧栏。
@@ -159,13 +163,15 @@ impl Action {
             Action::WhichKeyEnd => "which_key_end",
             Action::ToggleReasoning => "toggle_reasoning",
             Action::OpenDiffViewer => "open_diff",
-            Action::ToggleTabs => "toggle_tabs",
             Action::NextSession => "next_session",
             Action::PrevSession => "prev_session",
             Action::ToggleSelect => "toggle_select",
             Action::CopySelection => "copy_selection",
             Action::Rewind => "rewind",
             Action::PinSession => "pin_session",
+            Action::RenameSession => "rename_session",
+            Action::BackgroundTask => "background_task",
+            Action::OpenTimeline => "open_timeline",
             Action::ExportTranscript => "export_transcript",
             Action::WidenSidebar => "widen_sidebar",
             Action::NarrowSidebar => "narrow_sidebar",
@@ -212,13 +218,15 @@ impl Action {
             "which_key_end" => Action::WhichKeyEnd,
             "toggle_reasoning" => Action::ToggleReasoning,
             "open_diff" => Action::OpenDiffViewer,
-            "toggle_tabs" => Action::ToggleTabs,
             "next_session" => Action::NextSession,
             "prev_session" => Action::PrevSession,
             "toggle_select" => Action::ToggleSelect,
             "copy_selection" => Action::CopySelection,
             "rewind" => Action::Rewind,
             "pin_session" => Action::PinSession,
+            "rename_session" => Action::RenameSession,
+            "background_task" => Action::BackgroundTask,
+            "open_timeline" => Action::OpenTimeline,
             "export_transcript" => Action::ExportTranscript,
             "widen_sidebar" => Action::WidenSidebar,
             "narrow_sidebar" => Action::NarrowSidebar,
@@ -582,6 +590,30 @@ fn default_bindings() -> Vec<Binding> {
         ),
         b(false, ctrl(PressCode::Char('n')), Action::NewSession),
         b(false, ctrl(PressCode::Char('l')), Action::ListSessions),
+        // 后台运行当前任务（ctrl+b）：agent 运行时新建会话，当前任务在后台继续
+        b(false, ctrl(PressCode::Char('b')), Action::BackgroundTask),
+        // 消息时间线（ctrl+shift+t）
+        b(
+            false,
+            KeyPress {
+                code: PressCode::Char('t'),
+                ctrl: true,
+                alt: false,
+                shift: true,
+            },
+            Action::OpenTimeline,
+        ),
+        // 重命名当前会话（用 ctrl+shift+r 避免与 textarea 的 ctrl+r redo 冲突）
+        b(
+            false,
+            KeyPress {
+                code: PressCode::Char('r'),
+                ctrl: true,
+                alt: false,
+                shift: true,
+            },
+            Action::RenameSession,
+        ),
         // 对齐 opencode：F2/Shift+F2 循环最近模型
         b(false, key(PressCode::F(2)), Action::CycleModel),
         b(
@@ -596,8 +628,9 @@ fn default_bindings() -> Vec<Binding> {
         ),
         b(false, key(PressCode::PageUp), Action::ScrollUp),
         b(false, key(PressCode::PageDown), Action::ScrollDown),
-        b(false, key(PressCode::Up), Action::HistoryPrev),
-        b(false, key(PressCode::Down), Action::HistoryNext),
+        // ↑↓：空输入框滚聊天，有内容时 textarea 移光标（apply_action 内判断）
+        b(false, key(PressCode::Up), Action::ScrollUp),
+        b(false, key(PressCode::Down), Action::ScrollDown),
         // 对齐 opencode：Tab/Shift+Tab 循环 agent（build/plan）
         b(false, key(PressCode::Tab), Action::CycleAgent),
         b(

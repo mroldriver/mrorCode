@@ -159,6 +159,7 @@ pub fn event_type_label(ev: &AgentEvent) -> &'static str {
         AgentEvent::TurnComplete { .. } => "TurnComplete",
         AgentEvent::Error { .. } => "Error",
         AgentEvent::Cancelled => "Cancelled",
+        AgentEvent::SubAgent { .. } => "SubAgent",
     }
 }
 
@@ -215,6 +216,12 @@ pub fn event_signature(ev: &AgentEvent) -> String {
         }
         AgentEvent::Error { retryable, .. } => format!("error:{retryable}"),
         AgentEvent::Cancelled => "cancelled".to_string(),
+        AgentEvent::SubAgent {
+            parent_tool_id,
+            event,
+        } => {
+            format!("sub_agent:{parent_tool_id}:{}", event_signature(event))
+        }
     }
 }
 

@@ -614,6 +614,8 @@ impl TurnCtx {
                         working_dir: &self.working_dir,
                         cancel: &self.cancel,
                         request: &self.requester,
+                        tool_id: &call.id,
+                        event_sink: Some(&self.events),
                     };
                     let executed = tokio::select! {
                         biased;

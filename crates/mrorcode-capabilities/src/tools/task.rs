@@ -122,6 +122,10 @@ impl Tool for TaskTool {
             return ToolResult::error("task", "sub-agent channel closed before submit");
         }
 
+        // 子 agent 工具调用 id（用于事件投影定位，由主 agent 在 ToolContext 中传入）
+        let parent_tool_id = ctx.tool_id.to_string();
+        let sink = ctx.event_sink;
+
         let mut answer = String::new();
         let stop = loop {
             tokio::select! {
@@ -133,8 +137,33 @@ impl Tool for TaskTool {
                 }
                 ev = handle.events.recv() => match ev {
                     None => break mrorcode_kernel::StopReason::Cancelled,
-                    Some(AgentEvent::TextDelta(t)) => answer.push_str(&t),
+                    Some(AgentEvent::TextDelta(t)) => {
+                        answer.push_str(&t);
+                        // 转发文本增量到主会话实时投影
+                        if let Some(sink) = sink {
+                            let _ = sink.send(AgentEvent::SubAgent {
+                                parent_tool_id: parent_tool_id.clone(),
+                                event: Box::new(AgentEvent::TextDelta(t)),
+                            });
+                        }
+                    }
                     Some(AgentEvent::TurnComplete { stop_reason }) => break stop_reason,
+                    Some(AgentEvent::ToolStarted { id, name, arguments }) => {
+                        if let Some(sink) = sink {
+                            let _ = sink.send(AgentEvent::SubAgent {
+                                parent_tool_id: parent_tool_id.clone(),
+                                event: Box::new(AgentEvent::ToolStarted { id, name, arguments }),
+                            });
+                        }
+                    }
+                    Some(AgentEvent::ToolResult { id, name, content, is_error }) => {
+                        if let Some(sink) = sink {
+                            let _ = sink.send(AgentEvent::SubAgent {
+                                parent_tool_id: parent_tool_id.clone(),
+                                event: Box::new(AgentEvent::ToolResult { id, name, content, is_error }),
+                            });
+                        }
+                    }
                     Some(_) => {}
                 },
             }

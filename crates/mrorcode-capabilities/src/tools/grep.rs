@@ -214,6 +214,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool
             .execute(r#"{"pattern":"fn \\w+","include":"*.rs"}"#, &ctx)
@@ -235,6 +237,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool.execute(r#"{"pattern":"(unclosed"}"#, &ctx).await;
         assert!(r.is_error);

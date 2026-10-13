@@ -88,13 +88,15 @@ pub fn action_label(a: Action) -> &'static str {
         Action::WhichKeyHome | Action::WhichKeyEnd => "首/尾键位",
         Action::ToggleReasoning => "思考折叠",
         Action::OpenDiffViewer => "diff 查看",
-        Action::ToggleTabs => "切换标签栏",
         Action::NextSession => "下一会话",
         Action::PrevSession => "上一会话",
         Action::ToggleSelect => "选择文本",
         Action::CopySelection => "复制选区",
         Action::Rewind => "回退会话",
         Action::PinSession => "固定会话",
+        Action::RenameSession => "重命名会话",
+        Action::BackgroundTask => "后台运行任务",
+        Action::OpenTimeline => "消息时间线",
         Action::ExportTranscript => "导出会话",
         Action::WidenSidebar => "加宽侧栏",
         Action::NarrowSidebar => "缩窄侧栏",
@@ -114,10 +116,12 @@ pub fn action_group(a: Action) -> &'static str {
         | Action::SwitchProvider
         | Action::Rewind
         | Action::PinSession
+        | Action::RenameSession
+        | Action::BackgroundTask
+        | Action::OpenTimeline
         | Action::ExportTranscript => "Session",
         Action::OpenThemePicker
         | Action::ToggleSidebar
-        | Action::ToggleTabs
         | Action::NextSession
         | Action::PrevSession
         | Action::ToggleReasoning

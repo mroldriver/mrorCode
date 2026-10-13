@@ -8,7 +8,6 @@ pub mod bench_support;
 mod clipboard;
 mod commands;
 mod fuzzy;
-mod hit;
 mod input;
 mod keymap;
 pub mod render;

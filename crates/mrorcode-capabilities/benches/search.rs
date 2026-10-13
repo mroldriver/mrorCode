@@ -44,6 +44,8 @@ fn repo_search(c: &mut Criterion) {
         working_dir: &root,
         cancel: &cancel,
         request: &req,
+        tool_id: "",
+        event_sink: None,
     };
 
     c.bench_function("search/glob_10000_rs", |b| {

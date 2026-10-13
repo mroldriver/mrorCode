@@ -198,6 +198,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool
             .execute(r#"{"path":"a.txt","old":"world","new":"rust"}"#, &ctx)
@@ -221,6 +223,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool
             .execute(r#"{"path":"a.txt","old":"x","new":"y"}"#, &ctx)
@@ -240,6 +244,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool
             .execute(
@@ -265,6 +271,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool
             .execute(r#"{"path":"a.txt","old":"zzz","new":"q"}"#, &ctx)

@@ -28,6 +28,8 @@ pub enum SelectPurpose {
     Rewind,
     /// 跨 provider 切换（M5-e）。
     Provider,
+    /// 独立 diff viewer 数据源选择（git / branch / last-turn）。
+    DiffSource,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +51,10 @@ pub enum Dialog {
     Help(crate::widgets::dialog::forms::HelpState),
     /// 独立 diff viewer（M4-3）。
     Diff(crate::widgets::dialog::diff::DiffState),
+    /// 单行文本输入（会话重命名等）。
+    Input(crate::widgets::dialog::input::InputState),
+    /// 消息时间线（P2-9）：列出所有消息，支持回退到选中消息之后。
+    Timeline(crate::widgets::dialog::timeline::TimelineState),
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +67,10 @@ pub enum DialogOutcome {
     Accepted(SelectPurpose, String),
     /// Confirm 确认。
     Confirmed(crate::widgets::dialog::forms::ConfirmAction),
+    /// 输入对话框提交（purpose, text）。
+    InputSubmitted(crate::widgets::dialog::input::InputPurpose, String),
+    /// timeline 对话框确认回退到某消息索引之后。
+    TimelineRewind(usize),
 }
 
 #[derive(Debug)]

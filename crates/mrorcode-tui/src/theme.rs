@@ -105,103 +105,104 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// 内置暗色兜底主题（严格参照 opencode TUI generateSystem，纯黑终端背景）。
-    ///
-    /// 色值来源：`packages/opencode/src/cli/cmd/run/theme.ts`
-    /// - `generateSystem()` 第 382–466 行：从终端调色板派生主题
-    /// - `generateGrayScale()` 第 328–367 行：纯黑背景 lum<10 时 grays[n]=floor(n/12*0.4*255)
-    /// - `generateMutedTextColor()` 第 369–380 行：纯黑背景时 gray=180
-    /// - `RUN_THEME_FALLBACK` 第 605–654 行：ANSI 颜色 fallback seed
+    /// 内置暗色兜底主题：严格对齐 vendored `themes/opencode.json` 的 dark 分支，
+    /// 源文件 `packages/tui/src/theme/assets/opencode.json`（MIT vendored）。
+    /// 用于：JSON 解析失败兜底、JSON 未定义的 token（如 backgroundMenu）。
     pub fn opencode() -> Self {
-        // 纯黑背景下的灰度阶（generateGrayScale，lum=0 < 10）
-        // grays[n] = floor(n/12 * 0.4 * 255) = floor(n * 8.5)
-        let gray2 = Color::Rgb(0x11, 0x11, 0x11); // grays[2] = 17
-        let gray3 = Color::Rgb(0x19, 0x19, 0x19); // grays[3] = 25
-        let gray6 = Color::Rgb(0x33, 0x33, 0x33); // grays[6] = 51
-        let gray7 = Color::Rgb(0x3b, 0x3b, 0x3b); // grays[7] = 59
-        let gray8 = Color::Rgb(0x44, 0x44, 0x44); // grays[8] = 68
+        // darkStep 阶（defs）
+        let s1 = Color::Rgb(0x0a, 0x0a, 0x0a); // darkStep1 → background
+        let s2 = Color::Rgb(0x14, 0x14, 0x14); // darkStep2 → backgroundPanel / diffContextBg
+        let s3 = Color::Rgb(0x1e, 0x1e, 0x1e); // darkStep3 → backgroundElement / backgroundMenu
+        let s6 = Color::Rgb(0x3c, 0x3c, 0x3c); // darkStep6 → borderSubtle
+        let s7 = Color::Rgb(0x48, 0x48, 0x48); // darkStep7 → border
+        let s8 = Color::Rgb(0x60, 0x60, 0x60); // darkStep8 → borderActive
+        let s9 = Color::Rgb(0xfa, 0xb2, 0x83); // darkStep9 → primary / markdown link / syntax function
+        let s11 = Color::Rgb(0x80, 0x80, 0x80); // darkStep11 → textMuted / comment
+        let s12 = Color::Rgb(0xee, 0xee, 0xee); // darkStep12 → text / code block
 
-        // ANSI 颜色（fallback seed，RUN_THEME_FALLBACK）
-        let ansi_cyan = Color::Rgb(0x38, 0xbd, 0xf8); // index 6 → primary/info
-        let ansi_magenta = Color::Rgb(0xc0, 0x84, 0xfc); // index 5 → secondary/syntax-keyword
-        let ansi_blue = Color::Rgb(0x3b, 0x82, 0xf6); // index 4 → markdown-link/syntax-function
-        let ansi_red = Color::Rgb(0xef, 0x44, 0x44); // index 1 → error
-        let ansi_green = Color::Rgb(0x22, 0xc5, 0x5e); // index 2 → success
-        let ansi_yellow = Color::Rgb(0xf5, 0x9e, 0x0b); // index 3 → warning
-        let ansi_green_bright = Color::Rgb(0x4a, 0xde, 0x80); // index 10
-        let ansi_red_bright = Color::Rgb(0xf8, 0x71, 0x71); // index 9
+        // 语义色（defs）
+        let secondary = Color::Rgb(0x5c, 0x9c, 0xf5); // darkSecondary
+        let accent = Color::Rgb(0x9d, 0x7c, 0xd8); // darkAccent
+        let red = Color::Rgb(0xe0, 0x6c, 0x75); // darkRed → error / syntax-variable
+        let orange = Color::Rgb(0xf5, 0xa7, 0x42); // darkOrange → warning / markdown-strong / number
+        let green = Color::Rgb(0x7f, 0xd8, 0x8f); // darkGreen → success / markdown-code / string
+        let cyan = Color::Rgb(0x56, 0xb6, 0xc2); // darkCyan → info / markdownLinkText / operator
+        let yellow = Color::Rgb(0xe5, 0xc0, 0x7b); // darkYellow → markdown blockquote/emph / syntax-type
 
-        let text = Color::Rgb(0xf8, 0xfa, 0xfc); // seed.text → default foreground
-        let text_muted = Color::Rgb(0xb4, 0xb4, 0xb4); // generateMutedTextColor, gray=180
-
-        // diff 背景：tint(bg, color, 0.22)，纯黑背景
-        let diff_added_bg = Color::Rgb(0x07, 0x2b, 0x15);
-        let diff_removed_bg = Color::Rgb(0x35, 0x0f, 0x0f);
-        let diff_added_line_bg = Color::Rgb(0x15, 0x39, 0x22); // tint(grays[2], green, 0.22)
-        let diff_removed_line_bg = Color::Rgb(0x42, 0x1c, 0x1c); // tint(grays[2], red, 0.22)
+        // diff 相关（源主题直接给出的 hex）
+        let diff_added = Color::Rgb(0x4f, 0xd6, 0xbe);
+        let diff_removed = Color::Rgb(0xc5, 0x3b, 0x53);
+        let diff_context = Color::Rgb(0x82, 0x8b, 0xb8);
+        let diff_highlight_added = Color::Rgb(0xb8, 0xdb, 0x87);
+        let diff_highlight_removed = Color::Rgb(0xe2, 0x6a, 0x75);
+        let diff_added_bg = Color::Rgb(0x20, 0x30, 0x3b);
+        let diff_removed_bg = Color::Rgb(0x37, 0x22, 0x2c);
+        let diff_line_number = Color::Rgb(0x8f, 0x8f, 0x8f);
+        let diff_added_line_number_bg = Color::Rgb(0x1b, 0x2b, 0x34);
+        let diff_removed_line_number_bg = Color::Rgb(0x2d, 0x1f, 0x26);
 
         Self {
-            primary: ansi_cyan,
-            secondary: ansi_magenta,
-            accent: ansi_cyan, // generateSystem: accent = primary
-            error: ansi_red,
-            warning: ansi_yellow,
-            success: ansi_green,
-            info: ansi_cyan,
+            primary: s9,
+            secondary,
+            accent,
+            error: red,
+            warning: orange,
+            success: green,
+            info: cyan,
 
-            text,
-            text_muted,
-            selected_text: Color::Rgb(0x00, 0x00, 0x00), // selectedListItemText = bg
+            text: s12,
+            text_muted: s11,
+            selected_text: s1, // selectedListItemText = bg
 
-            background: Color::Rgb(0x00, 0x00, 0x00), // 终端原生背景（纯黑）
-            background_panel: gray2,    // grays[2]
-            background_element: gray3,  // grays[3]
-            background_menu: gray3,     // grays[3]
+            background: s1,
+            background_panel: s2,
+            background_element: s3,
+            background_menu: s3, // 源主题未定义 backgroundMenu，用 backgroundElement 兜底
 
-            border: gray7,              // grays[7]
-            border_active: gray8,       // grays[8]
-            border_subtle: gray6,       // grays[6]
+            border: s7,
+            border_active: s8,
+            border_subtle: s6,
 
-            diff_added: ansi_green,
-            diff_removed: ansi_red,
-            diff_context: gray7,        // grays[7]
-            diff_hunk_header: gray7,    // grays[7]
-            diff_highlight_added: ansi_green_bright,
-            diff_highlight_removed: ansi_red_bright,
+            diff_added,
+            diff_removed,
+            diff_context,
+            diff_hunk_header: diff_context,
+            diff_highlight_added,
+            diff_highlight_removed,
             diff_added_bg,
             diff_removed_bg,
-            diff_context_bg: gray2,     // grays[2]
-            diff_line_number: text_muted,
-            diff_added_line_number_bg: diff_added_line_bg,
-            diff_removed_line_number_bg: diff_removed_line_bg,
+            diff_context_bg: s2,
+            diff_line_number,
+            diff_added_line_number_bg,
+            diff_removed_line_number_bg,
 
-            // Markdown（generateSystem 第 441–454 行）
-            md_text: text,
-            md_heading: text,
-            md_link: ansi_blue,
-            md_link_text: ansi_cyan,
-            md_code: ansi_green,
-            md_blockquote: ansi_yellow,
-            md_emph: ansi_yellow,
-            md_strong: text,
-            md_horizontal_rule: gray7,
-            md_list_item: ansi_blue,
-            md_list_enumeration: ansi_cyan,
-            md_image: ansi_blue,
-            md_image_text: ansi_cyan,
-            md_code_bg: gray2,          // 代码块背景 = panel
-            md_code_block: text,        // markdownCodeBlock = fg
+            // Markdown
+            md_text: s12,
+            md_heading: accent,
+            md_link: s9,
+            md_link_text: cyan,
+            md_code: green,
+            md_blockquote: yellow,
+            md_emph: yellow,
+            md_strong: orange,
+            md_horizontal_rule: s11,
+            md_list_item: s9,
+            md_list_enumeration: cyan,
+            md_image: s9,
+            md_image_text: cyan,
+            md_code_bg: s2, // 代码块背景 = panel
+            md_code_block: s12,
 
-            // 语法高亮（generateSystem 第 455–463 行）
-            syntax_comment: text_muted,
-            syntax_keyword: ansi_magenta,
-            syntax_function: ansi_blue,
-            syntax_variable: text,
-            syntax_string: ansi_green,
-            syntax_number: ansi_yellow,
-            syntax_type: ansi_cyan,
-            syntax_operator: ansi_cyan,
-            syntax_punctuation: text,
+            // 语法高亮
+            syntax_comment: s11,
+            syntax_keyword: accent,
+            syntax_function: s9,
+            syntax_variable: red,
+            syntax_string: green,
+            syntax_number: orange,
+            syntax_type: yellow,
+            syntax_operator: cyan,
+            syntax_punctuation: s12,
         }
     }
 
@@ -624,8 +625,9 @@ mod tests {
     fn all_bundled_themes_parse_dark_and_light() {
         let dark = ThemeSet::bundled(Mode::Dark);
         let light = ThemeSet::bundled(Mode::Light);
-        assert_eq!(dark.len(), BUNDLED.len());
-        assert_eq!(light.len(), BUNDLED.len());
-        assert!(dark.names().any(|n| n == "tokyonight"));
+        // 只内置 opencode 一个主题
+        assert_eq!(dark.len(), 1);
+        assert_eq!(light.len(), 1);
+        assert!(dark.names().any(|n| n == "opencode"));
     }
 }

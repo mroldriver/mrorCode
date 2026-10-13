@@ -32,11 +32,6 @@ pub fn is_expandable(tool: &ToolView) -> bool {
     tool.output.trim().lines().count() > 1
 }
 
-/// 输出含 unified diff（可打开 diff viewer）。
-pub fn is_diff_output(tool: &ToolView) -> bool {
-    crate::widgets::diff::looks_like_diff(&tool.output)
-}
-
 fn output_line_count(tool: &ToolView) -> usize {
     tool.output.trim().lines().count()
 }
@@ -73,6 +68,7 @@ pub fn line(tool: &ToolView, spinner: &str, theme: &Theme, focused: bool) -> Lin
 }
 
 /// 卡片行之外的附加行：短输出直接展示；长输出按折叠态给提示或内容。
+/// task 工具额外显示子 agent 实时投影（流式文本 + 工具调用活动）。
 pub fn extra_lines(
     tool: &ToolView,
     expanded: bool,
@@ -80,27 +76,71 @@ pub fn extra_lines(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    // 子 agent 实时投影（task 工具专用）
+    if tool.name == "task" && (!tool.sub_agent_text.is_empty() || !tool.sub_agent_tools.is_empty())
+    {
+        out.push(styled_hint(
+            "   \u{251C} sub-agent:", // ├
+            focused,
+            theme,
+        ));
+        // 子 agent 工具调用活动（最多显示最近 5 个）
+        for sub in tool.sub_agent_tools.iter().rev().take(5) {
+            let glyph = match sub.status {
+                ToolStatus::Running => "\u{25D4}", // ◔
+                ToolStatus::Ok => "\u{2713}",      // ✓
+                ToolStatus::Failed => "\u{2717}",  // ✗
+                ToolStatus::Waiting => "~",
+            };
+            let color = match sub.status {
+                ToolStatus::Running => theme.primary,
+                ToolStatus::Ok => theme.success,
+                ToolStatus::Failed => theme.error,
+                ToolStatus::Waiting => theme.warning,
+            };
+            out.push(Line::from(Span::styled(
+                format!("   │ {glyph} {}", sub.name),
+                Style::default().fg(color),
+            )));
+        }
+        // 子 agent 流式文本（最多显示最后 3 行）
+        if !tool.sub_agent_text.is_empty() {
+            let lines: Vec<&str> = tool.sub_agent_text.trim_end().lines().collect();
+            let preview = lines.iter().rev().take(3).collect::<Vec<_>>();
+            for l in preview.iter().rev() {
+                let clipped = clip(l, width);
+                out.push(Line::from(Span::styled(
+                    format!("   │ {clipped}"),
+                    Style::default().fg(theme.text_muted),
+                )));
+            }
+        }
+    }
+
     let text = tool.output.trim_end();
     if text.is_empty() {
-        return Vec::new();
+        return out;
     }
     let total = output_line_count(tool);
 
     if total == 1 {
         // 单行输出直接显示，不做折叠
         let clipped = clip(text, width);
-        return vec![Line::from(Span::styled(
+        out.push(Line::from(Span::styled(
             format!("   {clipped}"),
             Style::default().fg(output_color(tool, theme)),
-        ))];
+        )));
+        return out;
     }
 
     if !expanded {
         let hint = format!("   \u{25B8} 输出 {total} 行（enter 展开）"); // ▸
-        return vec![styled_hint(&hint, focused, theme)];
+        out.push(styled_hint(&hint, focused, theme));
+        return out;
     }
 
-    let mut out: Vec<Line<'static>> = Vec::new();
     let color = output_color(tool, theme);
     let is_diff = crate::widgets::diff::looks_like_diff(text);
     for l in text.lines() {
@@ -133,15 +173,30 @@ fn styled_hint(text: &str, focused: bool, theme: &Theme) -> Line<'static> {
 
 /// 附加行的高度（窗口化布局用），与 extra_lines 行数保持一致。
 pub fn extra_height(tool: &ToolView, expanded: bool) -> u16 {
+    let mut h = 0u16;
+
+    // 子 agent 投影高度
+    if tool.name == "task" && (!tool.sub_agent_text.is_empty() || !tool.sub_agent_tools.is_empty())
+    {
+        h += 1; // 标题行
+        h += tool.sub_agent_tools.len().min(5) as u16; // 工具活动
+        if !tool.sub_agent_text.is_empty() {
+            let lines = tool.sub_agent_text.trim_end().lines().count();
+            h += lines.min(3) as u16;
+        }
+    }
+
     let total = output_line_count(tool);
     if total == 0 {
-        0
-    } else if total == 1 || !expanded {
-        1
-    } else {
-        // 全部输出 + 收起提示（行数无上限，需防 u16 溢出，超出部分由 ratatui 裁剪）
-        u16::try_from(total.saturating_add(1)).unwrap_or(u16::MAX)
+        return h;
     }
+    let add = if total == 1 || !expanded {
+        1u16
+    } else {
+        u16::try_from(total.saturating_add(1)).unwrap_or(u16::MAX)
+    };
+    h = h.saturating_add(add);
+    h
 }
 
 fn output_color(tool: &ToolView, theme: &Theme) -> ratatui::style::Color {
@@ -172,6 +227,8 @@ mod tests {
             arguments: String::new(),
             status: ToolStatus::Ok,
             output: output.to_string(),
+            sub_agent_text: String::new(),
+            sub_agent_tools: Vec::new(),
         }
     }
 

@@ -182,6 +182,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool.execute(r#"{"path":"x"}"#, &ctx).await;
         assert!(!r.is_error, "{}", r.content);
@@ -199,6 +201,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &req,
+            tool_id: "",
+            event_sink: None,
         };
         let r = tool.execute("{}", &ctx).await;
         assert!(r.is_error);

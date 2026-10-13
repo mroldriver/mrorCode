@@ -2,7 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -24,13 +24,13 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
 
     let logo = vec![
         Line::from(Span::styled(
-            "mrorcode",
+            "欧瑞文先生的智能编码助手",
             Style::default()
-                .fg(theme.primary)
+                .fg(Color::Rgb(96, 165, 250))
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "a fast terminal coding agent",
+            "终端 AI 编码助手",
             Style::default().fg(theme.text_muted),
         )),
     ];

@@ -29,17 +29,17 @@
 
 ### 子 agent / 会话体系
 
-- [ ] 子 agent 实时子会话投影、点击进入子会话（`task` 现仅回灌最终文本）
+- [x] ~~子 agent 实时子会话投影、点击进入子会话（`task` 现仅回灌最终文本）~~（v0.5.24 已实现实时投影：kernel 层 AgentEvent 新增 SubAgent 变体、ToolContext 新增 tool_id/event_sink；task 工具转发子 agent TextDelta/ToolStarted/ToolResult；TUI 工具卡显示子 agent 流式文本与工具调用活动）
 - [ ] `SubagentFooter`：父子会话导航（right/left/up）、子会话 token 统计
-- [ ] 后台子 agent（opencode `ctrl+b`，会话继续运行）
+- [x] ~~后台子 agent（opencode `ctrl+b`，会话继续运行）~~（v0.5.24 已实现：`ctrl+b` 在 agent 运行时新建会话并切换，当前任务在后台继续；切换会话不取消 agent 为架构原生支持；侧栏/标签页显示 busy spinner）
 - [x] ~~会话 pin / 快速槽持久化~~（v0.5.11 已实现 pin；快速槽仍按当前列表顺序）
-- [ ] 会话重命名（opencode `ctrl+r`）
+- [x] ~~会话重命名（opencode `ctrl+r`）~~（v0.5.23 已实现：`ctrl+shift+r` 或命令面板/`/rename-session`，文本输入对话框，同步磁盘快照标题；用 ctrl+shift+r 避免与 textarea 的 ctrl+r redo 冲突）
 - [ ] 会话 fork（从 timeline 分叉继续）
 - [ ] 会话 share/unshare（生成分享 URL）
 - [x] ~~export transcript 为 Markdown 文件（含 thinking/tool details 选项）~~（v0.5.12 已实现基础导出；thinking/tool details 选项待评估）
-- [ ] timeline 对话框（消息级时间线操作）
+- [x] ~~timeline 对话框（消息级时间线操作）~~（v0.5.24 已实现：`ctrl+shift+t` 打开，列出所有消息（user/assistant），显示角色图标、摘要、工具数；Enter 回退到选中消息之后）
 - [ ] 排队提交 QUEUED：同一会话连续提交多条
-- [ ] undo/redo 连带回滚文件改动（现 rewind 只截断消息、不动文件）
+- [x] ~~undo/redo 连带回滚文件改动（现 rewind 只截断消息、不动文件）~~（v0.5.24 已实现：rewind 时自动回滚被截断 turn 中的文件改动——edit 工具反向替换 new→old，write 工具删除创建的文件）
 
 ### 输入与补全
 
@@ -55,25 +55,25 @@
 ### 侧边栏
 
 - [ ] 新增分区：MCP（连接状态）、LSP、Todo、Modified Files（git 改动 +/-计数，可折叠）
-- [ ] 窄屏下侧栏全屏浮层（现宽 ≤100 直接隐藏；opencode 阈值 120、浮层底 alpha 70）
+- [x] ~~窄屏下侧栏全屏浮层（现宽 ≤100 直接隐藏；opencode 阈值 120、浮层底 alpha 70）~~（v0.5.23 已实现：阈值改为 120，≤120 时侧栏作为右侧浮层覆盖主内容，不挤压主区；浮层用 panel 不透明背景）
 
 ### Diff
 
-- [ ] 独立 diff viewer 支持 git / branch / last-turn 三种数据源（现仅能从工具卡打开）
+- [x] ~~独立 diff viewer 支持 git / branch / last-turn 三种数据源（现仅能从工具卡打开）~~（v0.5.23 已实现：`leader d` 无聚焦工具卡时打开数据源选择器，支持 git diff / branch diff（自动检测 main/master）/ last-turn（收集最近一轮 edit/write 输出））
 - [ ] 文件树侧栏 + hunk 跳转
 - [ ] 宽屏内联 diff 自动 split（opencode >120 自动；现仅着色）
 
 ### 其他
 
-- [ ] 图片 / PDF 剪贴板粘贴为附件
-- [ ] 跨平台原生剪贴板路径（powershell Set-Clipboard / osascript / wl-copy / xclip，OSC52 之外的兜底；现状：OSC 52 + optional arboard feature）
-- [ ] token 花费 USD 显示（v0.5.13 已有 input/output token 分类显示，但无 USD 换算）
+- [x] ~~图片 / PDF 剪贴板粘贴为附件~~（v0.5.24 已实现：粘贴单个图片/PDF 文件路径时自动转为 `@path` 附件引用，支持 png/jpg/jpeg/gif/webp/bmp/svg/pdf）
+- [x] ~~跨平台原生剪贴板路径（powershell Set-Clipboard / osascript / wl-copy / xclip，OSC52 之外的兜底；现状：OSC 52 + optional arboard feature）~~（v0.5.23 已实现：OSC 52 失败后自动兜底到平台原生命令——Windows powershell Set-Clipboard、macOS pbcopy、Linux wl-copy→xclip，全部通过 stdin 管道传递文本）
+- [x] ~~token 花费 USD 显示~~（v0.5.24 已实现：侧栏 Context 区显示累计 token 及估算 USD 花费，参考价 input $3/1M、output $15/1M tokens）（v0.5.13 已有 input/output token 分类显示，但无 USD 换算）
 - [ ] 声音提醒（完成/审批/错误音效）
-- [ ] 失焦时系统通知（审批、完成）
+- [x] ~~失焦时系统通知（审批、完成）~~（v0.5.24 已实现：跟踪终端焦点事件，agent 完成时若窗口失焦则播放终端 bell 音提醒）
 - [ ] 终端标题动态更新（`OC | 标题`）
 - [ ] 启动加载屏（v0.5.13 已有 Home 页 tips；独立启动加载屏待评估）
 - [x] ~~用户主题目录发现（`.opencode/themes` 式：`~/.mrorcode/themes/*.json`）~~（v0.5.11 已实现）
-- [ ] `system` 主题：从终端调色板自动生成
+- [x] ~~`system` 主题：从终端调色板自动生成~~（v0.5.25 已实现：新增 `system` 主题选项，前景/背景使用 Color::Reset 让终端使用默认调色板，其余用 ANSI 颜色）
 - [ ] SIGUSR2 主题热刷新
 - [ ] 插件 / slot 扩展系统（opencode 核心扩展机制；mrorcode 已明确不做，列出备查）
 
@@ -131,10 +131,12 @@
 
 ### P1 — 对标 opencode 核心体验
 
-3. **会话重命名**（`ctrl+r`）— 会话管理基础功能，实现成本低
-4. **窄屏下侧栏全屏浮层** — 当前窄屏直接隐藏侧栏，opencode 用浮层兜底
-5. **独立 diff viewer（git / branch / last-turn）** — 代码审查场景核心功能
-6. **跨平台原生剪贴板路径** — OSC 52 在部分终端不支持，需要 powershell/osascript/wl-copy/xclip 兜底
+3. ~~**会话重命名**（`ctrl+r`）— 会话管理基础功能，实现成本低~~（v0.5.23 已完成，键位 `ctrl+shift+r`）
+4. ~~**窄屏下侧栏全屏浮层** — 当前窄屏直接隐藏侧栏，opencode 用浮层兜底~~（v0.5.23 已完成，阈值 120，浮层覆盖不挤压）
+5. ~~**独立 diff viewer（git / branch / last-turn）** — 代码审查场景核心功能~~（v0.5.23 已完成，leader d 无聚焦工具卡时打开数据源选择器）
+6. ~~**跨平台原生剪贴板路径** — OSC 52 在部分终端不支持，需要 powershell/osascript/wl-copy/xclip 兜底~~（v0.5.23 已完成，OSC 52 失败后自动兜底平台原生命令）
+
+> P1 已全部完成。下一批建议从 P2 中选取。
 
 ### P2 — 增强功能，按需取舍
 

@@ -1,6 +1,6 @@
 //! 底部输入区的元信息行与样式装配（TextArea 本体在 store 中）。
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
@@ -31,11 +31,11 @@ pub fn style_textarea(state: &mut AppState, theme: &Theme) {
 }
 
 /// 按当前闪烁态同步光标样式（每帧/每次翻转调用）。
+///
+/// 亮帧：白色实心方块（fg 用面板深色保证方块内字符反相可读）；灭帧用文本默认色（不可见）。
 pub fn sync_cursor_style(state: &mut AppState, theme: &Theme) {
     let cursor_style = if state.cursor_blink_on {
-        Style::default()
-            .fg(theme.background_panel)
-            .bg(theme.primary)
+        Style::default().fg(theme.background_panel).bg(Color::White)
     } else {
         Style::default()
     };
@@ -43,31 +43,40 @@ pub fn sync_cursor_style(state: &mut AppState, theme: &Theme) {
 }
 
 /// 在给定区域内渲染 textarea（左竖线语义）。
+///
+/// 对齐 opencode：左竖线用 secondary（默认 agent 色，蓝），内边距左 2 / 右 2 / 上 1。
 pub fn render_prompt(
     state: &AppState,
     area: ratatui::layout::Rect,
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
 ) {
-    // 背景
-    ratatui::widgets::Block::default()
-        .style(Style::default().bg(theme.background_panel))
-        .render(area, buf);
-    // 左侧竖线
-    let border = ratatui::widgets::Block::default()
-        .borders(ratatui::widgets::Borders::LEFT)
-        .border_style(Style::default().fg(theme.primary))
-        .border_set(ratatui::symbols::border::Set {
-            vertical_left: "┃",
-            ..ratatui::symbols::border::PLAIN
-        });
-    let inner = border.inner(area);
-    border.render(area, buf);
+    // 对齐 opencode：蓝线(col0) + 灰面板(col1+)，紧贴无空列
+    // 外层 box 只有左蓝线；内层灰面板从 col1 开始，paddingLeft=2
+    let panel_x = area.x + 1;
+    let panel_width = area.width.saturating_sub(1);
+    // 灰面板背景：col1 到右边缘
+    for y in area.y..area.y + area.height {
+        for x in panel_x..panel_x + panel_width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(Style::default().bg(theme.background_panel));
+            }
+        }
+        // 蓝竖线 col0
+        if let Some(cell) = buf.cell_mut((area.x, y)) {
+            cell.set_symbol("\u{2503}"); // ┃
+            cell.set_style(Style::default().fg(theme.secondary));
+        }
+    }
+    // 内边距：面板内左 2 / 右 2 / 上 1
+    let pad_left: u16 = 2;
+    let pad_right: u16 = 2;
+    let pad_y: u16 = 1;
     let inset = ratatui::layout::Rect {
-        x: inner.x.saturating_add(0),
-        y: inner.y,
-        width: inner.width,
-        height: inner.height,
+        x: panel_x.saturating_add(pad_left),
+        y: area.y.saturating_add(pad_y),
+        width: panel_width.saturating_sub(pad_left + pad_right),
+        height: area.height.saturating_sub(pad_y),
     };
     (&state.prompt).render(inset, buf);
 }

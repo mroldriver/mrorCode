@@ -6,8 +6,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
+use crate::event::AgentEvent;
 use crate::request::Requester;
 
 /// 风险等级：只是建议元数据，强制力在 middleware。默认按 Risky 对待（安全默认）。
@@ -58,6 +60,11 @@ pub struct ToolContext<'a> {
     pub working_dir: &'a Path,
     pub cancel: &'a CancellationToken,
     pub request: &'a Requester,
+    /// 当前工具调用的 id（agent 权威分配），用于子 agent 事件投影定位。
+    pub tool_id: &'a str,
+    /// 子 agent 事件转发通道；task 等嵌套工具通过它把内部事件实时投影到主会话。
+    /// None 表示调用方不关心子事件（普通工具无需设置）。
+    pub event_sink: Option<&'a UnboundedSender<AgentEvent>>,
 }
 
 /// 工具实现。实现者绝不 panic：错误以 `is_error=true` 的结果返回。

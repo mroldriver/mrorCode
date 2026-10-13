@@ -15,7 +15,7 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
     Clear.render(area, buf);
 
     let width = 60u16.min(area.width.saturating_sub(4)).max(20);
-    let height = 9u16.min(area.height.saturating_sub(2)).max(6);
+    let height = 11u16.min(area.height.saturating_sub(2)).max(8);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 3;
     let card = Rect {
@@ -48,7 +48,10 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
         .to_string();
     let detail = crate::render::truncate_end(&detail, (width - 4) as usize);
 
-    let lines = vec![
+    let options = ["本次允许", "始终允许", "拒绝"];
+    let cursor = state.permission_cursor.min(options.len() - 1);
+
+    let mut lines: Vec<ratatui::text::Line> = vec![
         ratatui::text::Line::from(ratatui::text::Span::styled(
             "Permission required",
             Style::default()
@@ -65,10 +68,25 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
             Style::default().fg(theme.text),
         )),
         ratatui::text::Line::raw(""),
-        ratatui::text::Line::from(ratatui::text::Span::styled(
-            "y 本次允许 · a 始终允许 · n 拒绝 (esc)",
-            Style::default().fg(theme.text_muted),
-        )),
     ];
+    for (i, opt) in options.iter().enumerate() {
+        let selected = i == cursor;
+        let marker = if selected { "\u{25B6} " } else { "  " }; // ▶
+        let style = if selected {
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_muted)
+        };
+        lines.push(ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(marker, style),
+            ratatui::text::Span::styled(*opt, style),
+        ]));
+    }
+    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+        "\u{2191}\u{2193} 选择 · Enter 确认 · Esc 拒绝",
+        Style::default().fg(theme.text_muted),
+    )));
     Paragraph::new(lines).render(inner, buf);
 }

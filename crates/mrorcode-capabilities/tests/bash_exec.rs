@@ -26,6 +26,8 @@ async fn executes_platform_shell_echo() {
         working_dir: &dir,
         cancel: &cancel,
         request: &requester,
+        tool_id: "",
+        event_sink: None,
     };
 
     let result = BashTool
@@ -46,6 +48,8 @@ async fn failing_command_returns_error_result() {
         working_dir: &dir,
         cancel: &cancel,
         request: &requester,
+        tool_id: "",
+        event_sink: None,
     };
     let result = BashTool
         .execute(&serde_json::json!({"command": command}).to_string(), &ctx)

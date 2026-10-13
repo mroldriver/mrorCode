@@ -80,4 +80,10 @@ pub enum AgentEvent {
     Error { message: String, retryable: bool },
     /// 取消完成（终态）。
     Cancelled,
+    /// 子 agent 实时事件投影（task 工具转发子 agent 的内部事件）。
+    /// `parent_tool_id` 是主会话中 task 工具卡的 id，用于 TUI 定位投影目标。
+    SubAgent {
+        parent_tool_id: String,
+        event: Box<AgentEvent>,
+    },
 }

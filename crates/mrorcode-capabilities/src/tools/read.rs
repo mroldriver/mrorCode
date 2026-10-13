@@ -159,6 +159,8 @@ mod tests {
             working_dir: &dir,
             cancel: &cancel,
             request: &requester,
+            tool_id: "",
+            event_sink: None,
         };
 
         let r = tool.execute(r#"{"path":"a.txt"}"#, &ctx).await;

@@ -23,11 +23,16 @@ pub enum AppCommand {
     ToggleWhichKeyLayout,
     ToggleReasoning,
     OpenDiffViewer,
-    ToggleTabs,
     SelectText,
     RewindSession,
     /// 固定/取消固定当前会话。
     PinSession,
+    /// 重命名当前会话（ctrl+r，对齐 opencode）。
+    RenameSession,
+    /// 后台运行当前任务（ctrl+b）：agent 运行时新建会话并切换，当前任务在后台继续。
+    BackgroundTask,
+    /// 打开消息时间线对话框（P2-9）。
+    OpenTimeline,
     /// 导出当前会话为 Markdown 文件。
     ExportTranscript,
     /// 加宽侧栏。
@@ -177,13 +182,6 @@ pub fn registry() -> &'static [CommandSpec] {
             default_keys: &["leader d"],
         },
         CommandSpec {
-            command: AppCommand::ToggleTabs,
-            name: "toggle tabs",
-            desc: "显示/隐藏会话标签栏",
-            category: CommandCategory::View,
-            default_keys: &[],
-        },
-        CommandSpec {
             command: AppCommand::SelectText,
             name: "select text",
             desc: "键盘选择并复制文本",
@@ -203,6 +201,27 @@ pub fn registry() -> &'static [CommandSpec] {
             desc: "固定/取消固定当前会话",
             category: CommandCategory::Session,
             default_keys: &[],
+        },
+        CommandSpec {
+            command: AppCommand::RenameSession,
+            name: "rename session",
+            desc: "重命名当前会话",
+            category: CommandCategory::Session,
+            default_keys: &["ctrl+shift+r"],
+        },
+        CommandSpec {
+            command: AppCommand::BackgroundTask,
+            name: "background task",
+            desc: "后台运行当前任务（新建会话，当前任务继续运行）",
+            category: CommandCategory::Session,
+            default_keys: &["ctrl+b"],
+        },
+        CommandSpec {
+            command: AppCommand::OpenTimeline,
+            name: "timeline",
+            desc: "消息时间线（查看/回退到指定消息）",
+            category: CommandCategory::Session,
+            default_keys: &["ctrl+shift+t"],
         },
         CommandSpec {
             command: AppCommand::ExportTranscript,
@@ -273,10 +292,12 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::ToggleWhichKeyLayout => "toggle_which_key_layout",
         AppCommand::ToggleReasoning => "toggle_reasoning",
         AppCommand::OpenDiffViewer => "open_diff",
-        AppCommand::ToggleTabs => "toggle_tabs",
         AppCommand::SelectText => "select_text",
         AppCommand::RewindSession => "rewind_session",
         AppCommand::PinSession => "pin_session",
+        AppCommand::RenameSession => "rename_session",
+        AppCommand::BackgroundTask => "background_task",
+        AppCommand::OpenTimeline => "open_timeline",
         AppCommand::ExportTranscript => "export_transcript",
         AppCommand::WidenSidebar => "widen_sidebar",
         AppCommand::NarrowSidebar => "narrow_sidebar",
@@ -330,10 +351,12 @@ pub fn to_action(cmd: AppCommand) -> crate::keymap::Action {
         AppCommand::ToggleWhichKeyLayout => A::ToggleWhichKeyLayout,
         AppCommand::ToggleReasoning => A::ToggleReasoning,
         AppCommand::OpenDiffViewer => A::OpenDiffViewer,
-        AppCommand::ToggleTabs => A::ToggleTabs,
         AppCommand::SelectText => A::ToggleSelect,
         AppCommand::RewindSession => A::Rewind,
         AppCommand::PinSession => A::PinSession,
+        AppCommand::RenameSession => A::RenameSession,
+        AppCommand::BackgroundTask => A::BackgroundTask,
+        AppCommand::OpenTimeline => A::OpenTimeline,
         AppCommand::ExportTranscript => A::ExportTranscript,
         AppCommand::WidenSidebar => A::WidenSidebar,
         AppCommand::NarrowSidebar => A::NarrowSidebar,

@@ -70,7 +70,6 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
     let spinner = state.spinner_glyph().to_string();
     let focused = state.focused_tool.clone();
     let focused_reasoning = state.focused_reasoning;
-    let mut hits: Vec<crate::hit::HitRegion> = Vec::new();
     let mut cursor: u16 = 0;
     for (i, m) in state.messages.iter_mut().enumerate() {
         let h = heights[i];
@@ -94,10 +93,8 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
             &state.expanded_reasoning,
             focused.as_deref(),
             focused_reasoning,
-            &mut hits,
         );
     }
-    state.hit_regions.extend(hits);
 
     // 空态提示
     if state.messages.is_empty() {
@@ -123,7 +120,6 @@ fn render_message(
     expanded_reasoning: &HashSet<u64>,
     focused: Option<&str>,
     focused_reasoning: Option<u64>,
-    hits: &mut Vec<crate::hit::HitRegion>,
 ) {
     let inner_width = width.saturating_sub(2);
     let mut row = y0;
@@ -145,22 +141,14 @@ fn render_message(
             if row < area.y + area.height {
                 let line = reasoning::collapsed_line(m, theme, is_focus);
                 buf.set_line(area.x + 1, row, &line, width - 1);
-                hits.push(crate::hit::HitRegion {
-                    rect: Rect {
-                        x: area.x,
-                        y: row,
-                        width,
-                        height: 1,
-                    },
-                    target: crate::hit::HitTarget::Reasoning(m.uid),
-                });
             }
             row += 1;
         }
     }
 
     let (accent, body_bg) = match m.role {
-        Role::User => (theme.primary, theme.background_panel),
+        // 用户气泡左竖线与输入框统一用 secondary（蓝）
+        Role::User => (theme.secondary, theme.background_panel),
         Role::Assistant => (theme.border_subtle, theme.background),
     };
 
@@ -188,6 +176,7 @@ fn render_message(
     let pad_top = if is_user { 1 } else { 0 };
 
     // 渲染一行气泡（背景 + 左竖线），text 为 None 时只画背景
+    // 对齐 opencode：竖线是最左边缘，右边全是灰面板，文字 paddingLeft=2
     let mut render_bubble_row = |y: u16, text: Option<&Line<'static>>| {
         if y >= area.y + area.height {
             return;
@@ -227,32 +216,12 @@ fn render_message(
         if row < area.y + area.height {
             let l = tool_card::line(tool, spinner, theme, is_focused);
             buf.set_line(area.x + 1, row, &l, width - 1);
-            hits.push(crate::hit::HitRegion {
-                rect: Rect {
-                    x: area.x,
-                    y: row,
-                    width,
-                    height: 1,
-                },
-                target: crate::hit::HitTarget::Tool(tool.id.clone()),
-            });
         }
         row += 1;
         let extras = tool_card::extra_lines(tool, is_expanded, is_focused, width - 3, theme);
         for l in extras {
             if row < area.y + area.height {
                 buf.set_line(area.x + 1, row, &l, width - 1);
-                if tool_card::is_diff_output(tool) {
-                    hits.push(crate::hit::HitRegion {
-                        rect: Rect {
-                            x: area.x,
-                            y: row,
-                            width,
-                            height: 1,
-                        },
-                        target: crate::hit::HitTarget::Diff(tool.id.clone()),
-                    });
-                }
             }
             row += 1;
         }

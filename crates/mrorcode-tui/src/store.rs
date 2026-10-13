@@ -16,8 +16,8 @@ use crate::keymap::Keymap;
 use crate::storage::Store;
 use crate::theme::{Mode, Theme, ThemeSet};
 use crate::widgets::dialog::{
-    AlertState, ConfirmAction, ConfirmState, Dialog, HelpRow, HelpState, SelectItem, SelectPurpose,
-    SelectState,
+    AlertState, ConfirmAction, ConfirmState, Dialog, HelpRow, HelpState, InputPurpose, InputState,
+    SelectItem, SelectPurpose, SelectState, TimelineState,
 };
 use crate::widgets::markdown::MarkdownView;
 use crate::widgets::toast::ToastLevel;
@@ -73,6 +73,17 @@ pub struct ToolView {
     pub arguments: String,
     pub status: ToolStatus,
     pub output: String,
+    /// 子 agent 实时文本投影（task 工具专用，流式追加）。
+    pub sub_agent_text: String,
+    /// 子 agent 工具调用记录（task 工具专用，用于显示子 agent 的活动）。
+    pub sub_agent_tools: Vec<SubAgentToolView>,
+}
+
+/// 子 agent 内部工具调用的投影记录。
+#[derive(Clone, Debug)]
+pub struct SubAgentToolView {
+    pub name: String,
+    pub status: ToolStatus,
 }
 
 /// 可展开工具在消息列表中的定位（Tab 焦点遍历用）。
@@ -97,7 +108,7 @@ pub struct MessageView {
     pub streaming: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Role {
     User,
     Assistant,
@@ -131,8 +142,6 @@ pub struct AppState {
     pub sidebar: bool,
     /// 侧栏宽度（列数）。
     pub sidebar_width: u16,
-    /// 多会话标签栏是否显示（M4-4）。
-    pub show_tabs: bool,
 
     pub messages: Vec<MessageView>,
     /// 进程内单调消息 id 分配器（M4：投影按 uid 记忆展开态等）。
@@ -154,6 +163,8 @@ pub struct AppState {
     pub draft: String,
 
     pub permission: Option<PermissionRequest>,
+    /// 权限弹窗当前高亮的选项（0=本次允许 / 1=始终允许 / 2=拒绝）。
+    pub permission_cursor: usize,
     /// 对话框栈（栈顶吃键；M2-6 起 Select/Confirm/Help 均入栈）。
     pub dialogs: Vec<Dialog>,
     /// 粘底滚动；上翻后脱离。
@@ -200,11 +211,7 @@ pub struct AppState {
     /// `@`/`/` 补全浮层状态（None 表示未激活）。
     pub completion: Option<crate::input::Completion>,
 
-    /// 标签栏命中区域（每帧重建，M4-4/5）。
-    pub tab_hits: Vec<crate::widgets::tabs::TabHit>,
-    /// 鼠标命中区域（每帧重建，M4-5）。
-    pub hit_regions: Vec<crate::hit::HitRegion>,
-    /// 选区（M4-6）；键盘 `v` 或鼠标拖拽进入。
+    /// 选区（M4-6）；键盘 `v` 进入。
     pub selection: Option<crate::selection::Selection>,
     /// 键盘选择模式（modal，M4-6）：方向键扩展选区、y 复制、esc 取消。
     pub select_mode: bool,
@@ -218,6 +225,8 @@ pub struct AppState {
     pub usage_output_tokens: u64,
     /// 是否发生过上下文压缩（投影里出现 `[compacted` 标记，M4-8）。
     pub compacted: bool,
+    /// 终端窗口是否获得焦点（用于失焦时通知）。
+    pub terminal_focused: bool,
     /// 读/写/编辑过的文件路径（最近优先、去重、上限 8，M4-8 Files 分区）。
     pub touched_files: Vec<String>,
     /// 侧栏折叠的分区标题（M4-8）。
@@ -250,7 +259,6 @@ impl AppState {
     ) -> Self {
         let sidebar = kv.data.sidebar.unwrap_or(true);
         let sidebar_width = kv.data.sidebar_width.unwrap_or(42).clamp(20, 80);
-        let show_tabs = kv.data.tabs.unwrap_or(false);
         let which_key_on = kv.data.which_key.unwrap_or(false);
         let which_key_layout = match kv.data.which_key_layout.as_deref() {
             Some("overlay") => crate::widgets::whichkey::WkLayout::Overlay,
@@ -305,7 +313,6 @@ impl AppState {
             working_dir,
             sidebar,
             sidebar_width,
-            show_tabs,
             messages: Vec::new(),
             next_message_uid: 1,
             sessions: vec![SessionMeta {
@@ -323,6 +330,7 @@ impl AppState {
             hist_idx: None,
             draft: String::new(),
             permission: None,
+            permission_cursor: 0,
             dialogs: Vec::new(),
             stick_bottom: true,
             backscroll: 0,
@@ -343,8 +351,6 @@ impl AppState {
             leader_until: None,
             plan_mode: false,
             completion: None,
-            tab_hits: Vec::new(),
-            hit_regions: Vec::new(),
             selection: None,
             select_mode: false,
             screen_rows: Vec::new(),
@@ -352,6 +358,7 @@ impl AppState {
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             compacted: false,
+            terminal_focused: true,
             touched_files: Vec::new(),
             collapsed_sections: HashSet::new(),
             session_store: None,
@@ -401,13 +408,6 @@ impl AppState {
     pub fn toggle_sidebar(&mut self) {
         self.sidebar = !self.sidebar;
         self.kv.data.sidebar = Some(self.sidebar);
-        let _ = self.kv.save();
-    }
-
-    /// 切换标签栏显示（M4-4）。
-    pub fn toggle_tabs(&mut self) {
-        self.show_tabs = !self.show_tabs;
-        self.kv.data.tabs = Some(self.show_tabs);
         let _ = self.kv.save();
     }
 
@@ -1257,6 +1257,61 @@ impl AppState {
         }
     }
 
+    /// 重命名当前会话；空串或纯空白时忽略。同步更新磁盘快照标题。
+    pub fn rename_active_session(&mut self, new_title: &str) {
+        let trimmed = new_title.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let id = self.active_session;
+        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+            s.title = trimmed.to_string();
+        }
+        // 同步磁盘快照标题（若已持久化）
+        if let Some(store) = self.session_store.clone() {
+            if let Some(mut record) = store.load(id) {
+                record.title = trimmed.to_string();
+                if let Err(e) = store.save_snapshot(&record) {
+                    tracing::warn!("rename session snapshot failed: {e}");
+                }
+                self.history_sessions = store.list();
+            }
+        }
+    }
+
+    /// 打开重命名当前会话的输入对话框。
+    pub fn open_rename_dialog(&mut self) {
+        let current = self
+            .sessions
+            .iter()
+            .find(|s| s.id == self.active_session)
+            .map(|s| s.title.clone())
+            .unwrap_or_default();
+        self.push_dialog(Dialog::Input(InputState::new(
+            "rename session",
+            InputPurpose::RenameSession,
+            current,
+        )));
+    }
+
+    /// 打开消息时间线对话框（P2-9）。
+    pub fn open_timeline(&mut self) -> bool {
+        if self.messages.is_empty() {
+            return false;
+        }
+        let title = self
+            .sessions
+            .iter()
+            .find(|s| s.id == self.active_session)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "会话".to_string());
+        self.push_dialog(Dialog::Timeline(TimelineState::from_messages(
+            format!("timeline — {title}"),
+            &self.messages,
+        )));
+        true
+    }
+
     /// 导出当前会话为 Markdown 文件，返回文件路径。
     pub fn export_transcript(&self) -> std::io::Result<PathBuf> {
         let title = self
@@ -1345,7 +1400,7 @@ impl AppState {
                 } else {
                     String::new()
                 },
-                group: "Sessions".to_string(),
+                group: "会话".to_string(),
                 label: s.title.clone(),
                 value: s.id.to_string(),
             })
@@ -1480,6 +1535,7 @@ impl AppState {
     }
 
     /// 纯投影层 rewind：截断 messages / 回卷滚动 / 清工具焦点 / 覆盖 snapshot。
+    /// 连带回滚被截断 turn 中的文件改动（edit 反向替换、write 删除文件）。
     /// 返回是否实际执行（turn 数不合法或 busy 时为 false）。
     pub fn rewind_projection(&mut self, keep_turns: usize) -> bool {
         if self.phase.is_busy() || keep_turns == 0 {
@@ -1499,14 +1555,58 @@ impl AppState {
         if cutoff == 0 {
             return false;
         }
+        // 连带回滚文件改动：收集被截断 turn 中的 edit/write 工具，反向应用
+        let rolled_back = self.rollback_file_changes(cutoff);
+
         self.messages.truncate(cutoff);
         // 回卷滚动状态到最底
         self.stick_bottom = true;
         self.backscroll = 0;
         self.clear_tool_focus();
         self.persist_active_session();
-        self.toast("已回退；仅当前会话生效，磁盘 transcript 保留完整历史");
+        if rolled_back > 0 {
+            self.toast(format!(
+                "已回退并回滚 {rolled_back} 个文件改动；磁盘 transcript 保留完整历史"
+            ));
+        } else {
+            self.toast("已回退；仅当前会话生效，磁盘 transcript 保留完整历史");
+        }
         true
+    }
+
+    /// 回滚 cutoff 之后消息中的文件改动（edit 反向替换、write 删除文件）。
+    /// 返回成功回滚的文件数。
+    fn rollback_file_changes(&self, cutoff: usize) -> usize {
+        let mut rolled = 0usize;
+        for msg in &self.messages[cutoff..] {
+            for tool in &msg.tools {
+                match tool.name.as_str() {
+                    "edit_file" | "edit" => {
+                        if let Some((path, old, new)) = parse_edit_args(&tool.arguments) {
+                            let full = self.working_dir.join(&path);
+                            if let Ok(content) = std::fs::read_to_string(&full) {
+                                if content.contains(&new) {
+                                    let restored = content.replacen(&new, &old, 1);
+                                    if std::fs::write(&full, restored).is_ok() {
+                                        rolled += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "write_file" | "write" => {
+                        if let Some(path) = parse_write_path(&tool.arguments) {
+                            let full = self.working_dir.join(&path);
+                            if full.exists() && std::fs::remove_file(&full).is_ok() {
+                                rolled += 1;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        rolled
     }
 
     /// 打开当前聚焦工具卡的 diff viewer；无可展开 diff 时返回 false。
@@ -1529,6 +1629,64 @@ impl AppState {
                 true
             }
             None => false,
+        }
+    }
+
+    /// 打开独立 diff viewer 的数据源选择器（git / branch / last-turn）。
+    pub fn open_diff_source_picker(&mut self) {
+        let items = vec![
+            SelectItem {
+                label: "git diff".to_string(),
+                hint: "工作区 vs 暂存区".to_string(),
+                group: "Diff Source".to_string(),
+                value: "git".to_string(),
+            },
+            SelectItem {
+                label: "branch diff".to_string(),
+                hint: "当前分支 vs 主分支".to_string(),
+                group: "Diff Source".to_string(),
+                value: "branch".to_string(),
+            },
+            SelectItem {
+                label: "last turn".to_string(),
+                hint: "上一轮 AI 文件改动".to_string(),
+                group: "Diff Source".to_string(),
+                value: "last-turn".to_string(),
+            },
+        ];
+        self.push_dialog(Dialog::Select(SelectState::new(
+            "diff source",
+            SelectPurpose::DiffSource,
+            items,
+        )));
+    }
+
+    /// 从当前会话收集最近一轮（最后一个 user turn 之后）的 edit/write 工具输出，
+    /// 拼接为 unified diff 文本；无改动时返回 None。
+    pub fn collect_last_turn_diff(&self) -> Option<String> {
+        // 找到最后一个 user 消息的位置，之后的 assistant 消息中的工具输出即为"上一轮"
+        let mut last_user_idx = None;
+        for (i, m) in self.messages.iter().enumerate() {
+            if matches!(m.role, Role::User) {
+                last_user_idx = Some(i);
+            }
+        }
+        let start = last_user_idx.map(|i| i + 1).unwrap_or(0);
+        let mut out = String::new();
+        for m in &self.messages[start..] {
+            for t in &m.tools {
+                if matches!(t.name.as_str(), "edit" | "write") && !t.output.is_empty() {
+                    out.push_str(&t.output);
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
         }
     }
 
@@ -1610,8 +1768,17 @@ impl AppState {
                         tool,
                         arguments,
                     });
+                    self.permission_cursor = 0;
                 }
-                AgentEvent::TurnComplete { .. } => self.set_phase(Phase::Idle),
+                AgentEvent::TurnComplete { .. } => {
+                    self.set_phase(Phase::Idle);
+                    // 失焦时播放终端 bell 音提醒用户
+                    if !self.terminal_focused {
+                        use std::io::Write;
+                        let _ = std::io::stdout().write_all(b"\x07");
+                        let _ = std::io::stdout().flush();
+                    }
+                }
                 AgentEvent::Cancelled => {
                     self.set_phase(Phase::Idle);
                     self.permission = None;
@@ -1702,6 +1869,20 @@ fn path_from_arguments(arguments: &str) -> Option<String> {
     }
 }
 
+/// 从 edit 工具参数中提取 (path, old, new)，用于回滚。
+fn parse_edit_args(arguments: &str) -> Option<(String, String, String)> {
+    let v: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let path = v.get("path")?.as_str()?.to_string();
+    let old = v.get("old")?.as_str()?.to_string();
+    let new = v.get("new")?.as_str()?.to_string();
+    Some((path, old, new))
+}
+
+/// 从 write 工具参数中提取文件路径，用于回滚（删除文件）。
+fn parse_write_path(arguments: &str) -> Option<String> {
+    path_from_arguments(arguments)
+}
+
 /// 纯消息投影：把 agent 事件追加进某个会话的消息视图（活动/后台桶通用）。
 /// `next_uid` 为消息稳定 id 分配器。
 fn project_event(ev: AgentEvent, messages: &mut Vec<MessageView>, next_uid: &mut u64) {
@@ -1736,6 +1917,8 @@ fn project_event(ev: AgentEvent, messages: &mut Vec<MessageView>, next_uid: &mut
                         arguments,
                         status: ToolStatus::Running,
                         output: String::new(),
+                        sub_agent_text: String::new(),
+                        sub_agent_tools: Vec::new(),
                     });
                 }
             }
@@ -1771,6 +1954,43 @@ fn project_event(ev: AgentEvent, messages: &mut Vec<MessageView>, next_uid: &mut
             }
         }
         AgentEvent::Usage { .. } | AgentEvent::Request { .. } => {}
+        AgentEvent::SubAgent {
+            parent_tool_id,
+            event,
+        } => {
+            // 子 agent 事件投影：定位到主会话中对应的 task 工具卡，
+            // 把子 agent 的文本增量和工具调用实时写入工具卡。
+            if let Some(last) = messages.last_mut() {
+                if let Some(tool) = last.tools.iter_mut().find(|t| t.id == parent_tool_id) {
+                    match *event {
+                        AgentEvent::TextDelta(t) => {
+                            tool.sub_agent_text.push_str(&t);
+                        }
+                        AgentEvent::ToolStarted { name, .. } => {
+                            tool.sub_agent_tools.push(SubAgentToolView {
+                                name,
+                                status: ToolStatus::Running,
+                            });
+                        }
+                        AgentEvent::ToolResult { name, is_error, .. } => {
+                            if let Some(sub) = tool
+                                .sub_agent_tools
+                                .iter_mut()
+                                .rev()
+                                .find(|s| s.name == name)
+                            {
+                                sub.status = if is_error {
+                                    ToolStatus::Failed
+                                } else {
+                                    ToolStatus::Ok
+                                };
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 }
 impl MessageView {
@@ -1876,6 +2096,8 @@ fn project_conversation(convo: &Conversation, next_uid: &mut u64) -> Vec<Message
                         arguments: call.arguments.clone(),
                         status: ToolStatus::Running,
                         output: String::new(),
+                        sub_agent_text: String::new(),
+                        sub_agent_tools: Vec::new(),
                     });
                 }
                 out.push(view);
@@ -1926,6 +2148,8 @@ mod tests {
             arguments: "{\"command\":\"ls\"}".into(),
             status: ToolStatus::Ok,
             output: "listed".into(),
+            sub_agent_text: String::new(),
+            sub_agent_tools: Vec::new(),
         });
         view.push(assistant);
 
@@ -2034,11 +2258,11 @@ mod tests {
     #[test]
     fn sidebar_section_toggles() {
         let mut st = temp_state("section");
-        assert!(!st.is_section_collapsed("Files"));
-        st.toggle_section("Files");
-        assert!(st.is_section_collapsed("Files"));
-        st.toggle_section("Files");
-        assert!(!st.is_section_collapsed("Files"));
+        assert!(!st.is_section_collapsed("文件"));
+        st.toggle_section("文件");
+        assert!(st.is_section_collapsed("文件"));
+        st.toggle_section("文件");
+        assert!(!st.is_section_collapsed("文件"));
     }
 
     #[test]
@@ -2246,5 +2470,179 @@ mod tests {
         st.which_key_group_delta(1);
         assert_eq!(st.which_key.offset, 0);
         assert!(wk::page_size(w, h) > 0);
+    }
+
+    #[test]
+    fn rename_active_session_updates_title_and_persists() {
+        let root = std::env::temp_dir().join(format!("mrorcode-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = SessionStore::with_root(root.clone());
+
+        let mut st = temp_state("rename");
+        st.attach_session_store(Some(store.clone()));
+        st.messages.push(MessageView::user(1, "hello".into()));
+        st.persist_active_session();
+        let id = st.active_session;
+
+        // 重命名
+        st.rename_active_session("  我的会话  ");
+        let title = st
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.clone())
+            .unwrap();
+        assert_eq!(title, "我的会话"); // trim 生效
+
+        // 磁盘快照标题同步更新
+        let record = store.load(id).unwrap();
+        assert_eq!(record.title, "我的会话");
+
+        // 空串不改名
+        st.rename_active_session("   ");
+        let title2 = st
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.clone())
+            .unwrap();
+        assert_eq!(title2, "我的会话");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_rename_dialog_pushes_input_with_current_title() {
+        let mut st = temp_state("rename-dialog");
+        st.sessions[0].title = "原标题".into();
+        assert!(st.dialogs.is_empty());
+        st.open_rename_dialog();
+        assert_eq!(st.dialogs.len(), 1);
+        match &st.dialogs[0] {
+            Dialog::Input(input) => {
+                assert_eq!(input.text(), "原标题");
+            }
+            _ => panic!("expected Input dialog"),
+        }
+    }
+
+    #[test]
+    fn open_diff_source_picker_lists_three_sources() {
+        let mut st = temp_state("diff-picker");
+        st.open_diff_source_picker();
+        assert_eq!(st.dialogs.len(), 1);
+        match &st.dialogs[0] {
+            Dialog::Select(sel) => {
+                assert_eq!(sel.len(), 3);
+            }
+            _ => panic!("expected Select dialog"),
+        }
+    }
+
+    #[test]
+    fn collect_last_turn_diff_gathers_edit_outputs() {
+        let mut st = temp_state("last-turn");
+        // user turn
+        st.messages.push(MessageView::user(1, "请修改文件".into()));
+        // assistant turn with edit tool
+        let mut assistant = MessageView::assistant(2);
+        assistant.tools.push(ToolView {
+            id: "t1".into(),
+            name: "edit".into(),
+            arguments: "{}".into(),
+            status: ToolStatus::Ok,
+            output:
+                "--- a.rs\n+++ a.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    old();\n+    new();\n }\n"
+                    .into(),
+            sub_agent_text: String::new(),
+            sub_agent_tools: Vec::new(),
+        });
+        st.messages.push(assistant);
+
+        let diff = st.collect_last_turn_diff().unwrap();
+        assert!(diff.contains("old()"));
+        assert!(diff.contains("new()"));
+    }
+
+    #[test]
+    fn collect_last_turn_diff_returns_none_when_empty() {
+        let st = temp_state("last-turn-empty");
+        assert!(st.collect_last_turn_diff().is_none());
+    }
+
+    #[test]
+    fn rewind_rolls_back_edit_file_changes() {
+        let dir = std::env::temp_dir().join(format!("mrorcode-rewind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        let mut st = temp_state("rewind-edit");
+        st.working_dir = dir.clone();
+        // 第一轮 user + assistant（无文件修改）
+        st.messages.push(MessageView::user(1, "first".into()));
+        st.messages.push(MessageView::assistant(2));
+        // 第二轮 user + assistant（含 edit 工具，把 world 改成 rust）
+        st.messages.push(MessageView::user(3, "second".into()));
+        let mut assistant = MessageView::assistant(4);
+        assistant.tools.push(ToolView {
+            id: "e1".into(),
+            name: "edit_file".into(),
+            arguments: r#"{"path":"test.txt","old":"world","new":"rust"}"#.into(),
+            status: ToolStatus::Ok,
+            output: "Edited test.txt (1 replacement(s))".into(),
+            sub_agent_text: String::new(),
+            sub_agent_tools: Vec::new(),
+        });
+        st.messages.push(assistant);
+
+        // 模拟 edit 已执行：文件内容已变为 hello rust
+        std::fs::write(&file, "hello rust").unwrap();
+
+        // 回退到第一轮（keep_turns=1），应回滚第二轮的 edit
+        assert!(st.rewind_projection(1));
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content, "hello world");
+        assert_eq!(st.messages.len(), 2); // 第一轮 user + assistant
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rewind_removes_write_file_changes() {
+        let dir = std::env::temp_dir().join(format!("mrorcode-rewind-w-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("new.txt");
+
+        let mut st = temp_state("rewind-write");
+        st.working_dir = dir.clone();
+        // 第一轮 user + assistant（无文件修改）
+        st.messages.push(MessageView::user(1, "first".into()));
+        st.messages.push(MessageView::assistant(2));
+        // 第二轮 user + assistant（含 write 工具）
+        st.messages.push(MessageView::user(3, "second".into()));
+        let mut assistant = MessageView::assistant(4);
+        assistant.tools.push(ToolView {
+            id: "w1".into(),
+            name: "write_file".into(),
+            arguments: r#"{"path":"new.txt","content":"hello"}"#.into(),
+            status: ToolStatus::Ok,
+            output: "Wrote new.txt".into(),
+            sub_agent_text: String::new(),
+            sub_agent_tools: Vec::new(),
+        });
+        st.messages.push(assistant);
+
+        // 模拟 write 已执行：文件存在
+        std::fs::write(&file, "hello").unwrap();
+        assert!(file.exists());
+
+        // 回退到第一轮，应删除第二轮 write 创建的文件
+        assert!(st.rewind_projection(1));
+        assert!(!file.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

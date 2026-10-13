@@ -160,6 +160,8 @@ mod tests {
             working_dir: dir,
             cancel,
             request: req,
+            tool_id: "",
+            event_sink: None,
         }
     }
 

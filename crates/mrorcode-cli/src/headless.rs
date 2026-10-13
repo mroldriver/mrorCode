@@ -104,6 +104,18 @@ pub fn event_line(ev: &AgentEvent) -> Option<Value> {
             "message": message
         }),
         AgentEvent::Cancelled => json!({ "type": "cancelled" }),
+        AgentEvent::SubAgent {
+            parent_tool_id,
+            event,
+        } => {
+            // 子 agent 事件递归转换，嵌套在 sub_agent 字段中
+            let inner = event_line(event)?;
+            json!({
+                "type": "sub_agent.event",
+                "parent_tool_id": parent_tool_id,
+                "event": inner
+            })
+        }
     };
     Some(with_version(body))
 }
@@ -262,6 +274,10 @@ fn render_plain<W: Write>(ev: &AgentEvent, out: &mut W) {
         }
         AgentEvent::Cancelled => {
             eprintln!("cancelled");
+        }
+        AgentEvent::SubAgent { event, .. } => {
+            // 子 agent 事件递归渲染（纯文本模式下缩进显示）
+            render_plain(event, out);
         }
     }
 }
