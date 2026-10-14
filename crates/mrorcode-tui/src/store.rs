@@ -248,6 +248,11 @@ pub struct AppState {
     pub themes_light: ThemeSet,
     /// 主题代际：每次切换主题/模式 +1，用于让 markdown 高亮缓存失效。
     pub theme_gen: u64,
+
+    /// 已连接 MCP server 名列表（启动时从 Assembly 提取，仅用于展示）。
+    pub mcp_servers: Vec<String>,
+    /// 当前工作目录的 git 分支名（非 git 仓库时为 None）。
+    pub git_branch: Option<String>,
 }
 
 impl AppState {
@@ -370,6 +375,8 @@ impl AppState {
             themes_dark,
             themes_light,
             theme_gen: 0,
+            mcp_servers: Vec::new(),
+            git_branch: None,
         }
     }
 

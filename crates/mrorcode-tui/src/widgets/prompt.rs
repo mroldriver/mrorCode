@@ -27,6 +27,9 @@ pub fn style_textarea(state: &mut AppState, theme: &Theme) {
     state.prompt.set_cursor_line_style(Style::default());
     state
         .prompt
+        .set_placeholder_text("输入消息... \"这个项目的技术栈是什么？\"");
+    state
+        .prompt
         .set_placeholder_style(Style::default().fg(theme.text_muted));
 }
 
@@ -125,11 +128,26 @@ pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| state.working_dir.display().to_string());
-    spans.push(Span::styled(cwd, Style::default().fg(theme.text_muted)));
+    let cwd_label = match &state.git_branch {
+        Some(br) => format!("{cwd}:{br}"),
+        None => cwd,
+    };
+    spans.push(Span::styled(
+        cwd_label,
+        Style::default().fg(theme.text_muted),
+    ));
 
     // 右侧提示
+    let right_hint = if state.mcp_servers.is_empty() {
+        "   enter 发送 · ctrl+j 换行 · leader b 侧栏".to_string()
+    } else {
+        format!(
+            "   {} MCP · enter 发送 · ctrl+j 换行 · leader b 侧栏",
+            state.mcp_servers.len()
+        )
+    };
     spans.push(Span::styled(
-        "   enter 发送 · ctrl+j 换行 · leader b 侧栏",
+        right_hint,
         Style::default().fg(theme.text_muted),
     ));
     Line::from(spans)

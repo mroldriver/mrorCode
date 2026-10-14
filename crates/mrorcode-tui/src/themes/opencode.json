@@ -42,7 +42,7 @@
   },
   "theme": {
     "primary": {
-      "dark": "darkStep9",
+      "dark": "#1668dc",
       "light": "lightStep9"
     },
     "secondary": {

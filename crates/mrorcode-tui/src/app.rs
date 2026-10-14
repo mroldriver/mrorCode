@@ -62,9 +62,17 @@ pub async fn run(
         provider_name,
         model,
         available_models,
+        mcp,
         ..
     } = assembly;
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // 启动期一次性探测：MCP server 列表 + 当前 git 分支（仅用于展示）。
+    let mcp_server_names: Vec<String> = mcp
+        .as_ref()
+        .map(|b| b.servers.iter().map(|s| s.name.clone()).collect())
+        .unwrap_or_default();
+    let git_branch_current = detect_git_branch(&working_dir);
 
     let mut terminal = setup_terminal()?;
     install_panic_restore();
@@ -79,6 +87,8 @@ pub async fn run(
     let assembly_model = model.clone();
     let mut state = AppState::new(model, available_models, working_dir.clone(), kv);
     state.attach_config(config, options, provider_name);
+    state.mcp_servers = mcp_server_names;
+    state.git_branch = git_branch_current;
     if state.model != assembly_model {
         let m = state.model.clone();
         handle.set_model(m.clone());
@@ -950,6 +960,17 @@ fn run_git(cwd: &std::path::Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+/// 探测当前分支名（`git rev-parse --abbrev-ref HEAD`）；非仓库 / 失败返回 None。
+fn detect_git_branch(cwd: &std::path::Path) -> Option<String> {
+    let out = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let b = out.trim().to_string();
+    if b.is_empty() || b == "HEAD" {
+        None
+    } else {
+        Some(b)
+    }
+}
+
 /// 检测仓库主分支名（main 或 master），默认 main。
 fn detect_main_branch(cwd: &std::path::Path) -> String {
     for candidate in &["main", "master"] {
@@ -1452,6 +1473,11 @@ mod tests {
     }
 
     fn buffer_contains(term: &Terminal<TestBackend>, needle: &str) -> bool {
+        row_of(term, needle).is_some()
+    }
+
+    /// 返回包含 needle 的行号（自上往下第一处）。
+    fn row_of(term: &Terminal<TestBackend>, needle: &str) -> Option<u16> {
         let buf = term.backend().buffer();
         let area = buf.area();
         for y in area.top()..area.bottom() {
@@ -1462,10 +1488,10 @@ mod tests {
                 }
             }
             if row.contains(needle) {
-                return true;
+                return Some(y);
             }
         }
-        false
+        None
     }
 
     fn start_runtime(
@@ -1492,11 +1518,39 @@ mod tests {
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
         let mut state = test_state();
         term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&term, "mrorcode"));
-        assert!(buffer_contains(&term, "enter"));
-        for ch in "发送".chars() {
-            assert!(buffer_contains(&term, &ch.to_string()));
-        }
+        // Logo（中文标题）
+        assert!(buffer_contains(&term, "欧"));
+        // 模型行：Build 徽章 + 当前模型
+        let meta_row = row_of(&term, "Build").expect("元信息行存在");
+        // 键位提示行：ctrl+p commands
+        let hint_row = row_of(&term, "ctrl+p").expect("键位提示行存在");
+
+        // 布局守卫（垂直 chunks 索引错位会打破这个间距）：
+        //   meta_row      元信息行（灰底面板最后一条内容行）
+        //   +1            面板内 bottom padding（灰底空行）
+        //   +2            面板外 bottom margin（空白行）
+        //   +3            cwd / 键位提示行
+        assert_eq!(
+            hint_row - meta_row,
+            3,
+            "元信息行与提示行之间应隔出 面板底padding行 + 外边距空白行"
+        );
+        let buf = term.backend().buffer();
+        // 120 宽终端 pw=75 面板居中：x≈22 起蓝竖线、x=23 起灰底，取 x=30 在面板内
+        let pad_bg = buf.cell((30, meta_row + 1)).unwrap().style().bg;
+        assert_eq!(
+            pad_bg,
+            Some(ratatui::style::Color::Rgb(0x14, 0x14, 0x14)),
+            "元信息行下方一行应仍是灰底（面板 bottom padding）"
+        );
+        let margin_blank = (0..buf.area().width).all(|x| {
+            buf.cell((x, meta_row + 2))
+                .unwrap()
+                .symbol()
+                .trim()
+                .is_empty()
+        });
+        assert!(margin_blank, "面板与提示行之间应有一行完全空白的外边距");
         handle.shutdown();
     }
 
@@ -1704,13 +1758,13 @@ mod tests {
         // 窄屏（宽 100 ≤ 120 阈值）：侧栏作为浮层渲染，主内容不被挤压
         let mut narrow = Terminal::new(TestBackend::new(100, 40)).unwrap();
         narrow.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&narrow, "mrorcode"));
-        // 浮层侧栏贴右边缘：侧栏标题 "mrorcode" 应在 x≈59（100-42+1）、y=2（顶部留白+侧栏内 padding）
+        assert!(buffer_contains(&narrow, "欧"));
+        // 浮层侧栏贴右边缘：侧栏标题 "欧瑞文..." 应在 x≈59（100-42+1）、y=2（顶部留白+侧栏内 padding）
         let buf_narrow = narrow.backend().buffer();
         let mut found_overlay = false;
         for x in 55..65 {
             if let Some(cell) = buf_narrow.cell((x, 2)) {
-                if cell.symbol() == "m" {
+                if cell.symbol() == "欧" {
                     found_overlay = true;
                     break;
                 }
@@ -1724,13 +1778,13 @@ mod tests {
         // 宽屏（宽 140 > 120）：侧栏内联渲染
         let mut wide = Terminal::new(TestBackend::new(140, 40)).unwrap();
         wide.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&wide, "mrorcode"));
+        assert!(buffer_contains(&wide, "欧"));
         // 内联侧栏标题应在 x≈98（140-42+1-1）、y=2（顶部留白+侧栏内 padding）
         let buf_wide = wide.backend().buffer();
         let mut found_inline = false;
         for x in 94..104 {
             if let Some(cell) = buf_wide.cell((x, 2)) {
-                if cell.symbol() == "m" {
+                if cell.symbol() == "欧" {
                     found_inline = true;
                     break;
                 }
