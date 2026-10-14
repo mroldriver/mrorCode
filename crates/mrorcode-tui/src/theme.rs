@@ -79,6 +79,8 @@ pub struct Theme {
 pub enum Mode {
     #[default]
     Dark,
+    /// 亮色模式：当前未在运行时暴露（内置主题 JSON 仍解析 light 分支以便将来恢复）。
+    #[allow(dead_code)]
     Light,
 }
 
@@ -87,13 +89,6 @@ impl Mode {
         match self {
             Mode::Dark => "dark",
             Mode::Light => "light",
-        }
-    }
-
-    pub fn parse(s: &str) -> Mode {
-        match s.to_ascii_lowercase().as_str() {
-            "light" => Mode::Light,
-            _ => Mode::Dark,
         }
     }
 }
@@ -142,7 +137,9 @@ impl Theme {
         let diff_removed_line_number_bg = Color::Rgb(0x2d, 0x1f, 0x26);
 
         Self {
-            primary: s9,
+            // 品牌主色：与 vendored themes/opencode.json 的 primary (#409EFF) 保持一致；
+            // 这里不再跟随上游 darkStep9（#fab283）——上游的 s9 仍保留给 markdown link 等。
+            primary: Color::Rgb(0x40, 0x9e, 0xff),
             secondary,
             accent,
             error: red,
@@ -360,44 +357,8 @@ impl ThemeSet {
         ThemeSet { themes }
     }
 
-    /// 从用户目录 `~/.mrorcode/themes/*.json` 加载主题；同名覆盖内置。
-    pub fn with_user_themes(self, mode: Mode) -> Self {
-        let Some(home) = dirs::home_dir() else {
-            return self;
-        };
-        let dir = home.join(".mrorcode").join("themes");
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return self;
-        };
-        let mut themes = self.themes;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(name) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-            else {
-                continue;
-            };
-            let Ok(json) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if let Some(theme) = parse(&json, mode) {
-                // 覆盖同名内置主题
-                if let Some(slot) = themes.iter_mut().find(|(n, _)| *n == name) {
-                    slot.1 = theme;
-                } else {
-                    themes.push((name, theme));
-                }
-            }
-        }
-        themes.sort_by(|a, b| a.0.cmp(&b.0));
-        ThemeSet { themes }
-    }
-
+    /// 主题名列表（主要供测试断言；运行时不再有主题选择器）。
+    #[allow(dead_code)]
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.themes.iter().map(|(n, _)| n.as_str())
     }
@@ -406,6 +367,7 @@ impl ThemeSet {
         self.themes.iter().find(|(n, _)| n == name).map(|(_, t)| t)
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.themes.len()
     }

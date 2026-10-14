@@ -240,13 +240,9 @@ pub struct AppState {
     /// 本地偏好（主题/历史/键位等）。
     pub kv: Store,
 
-    /// 当前生效主题。
+    /// 当前生效主题（内置 opencode，固定暗色；不再支持运行时切换）。
     pub theme: Theme,
-    pub theme_name: String,
-    pub theme_mode: Mode,
-    pub themes_dark: ThemeSet,
-    pub themes_light: ThemeSet,
-    /// 主题代际：每次切换主题/模式 +1，用于让 markdown 高亮缓存失效。
+    /// 主题代际：markdown 高亮缓存失效信号（当前恒为 0，保留以便将来扩展）。
     pub theme_gen: u64,
 
     /// 已连接 MCP server 名列表（启动时从 Assembly 提取，仅用于展示）。
@@ -270,31 +266,17 @@ impl AppState {
             _ => crate::widgets::whichkey::WkLayout::Dock,
         };
         let history = kv.data.prompt_history.clone();
-        let theme_mode = Mode::parse(&kv.data.theme_mode);
-        // KV 记住的模型在可选列表内时恢复（kernel 侧由调用方补发 SetModel）
+        // 内置 opencode 暗色主题（唯一；不再从 KV 恢复主题名/模式）
+        let theme = ThemeSet::bundled(Mode::Dark)
+            .get("opencode")
+            .cloned()
+            .unwrap_or_else(Theme::opencode);
         let model = match &kv.data.model {
             Some(remembered) if available_models.iter().any(|m| m == remembered) => {
                 remembered.clone()
             }
             _ => model,
         };
-        let themes_dark = ThemeSet::bundled(Mode::Dark).with_user_themes(Mode::Dark);
-        let themes_light = ThemeSet::bundled(Mode::Light).with_user_themes(Mode::Light);
-        let theme_name = kv
-            .data
-            .theme
-            .clone()
-            .filter(|n| match theme_mode {
-                Mode::Dark => themes_dark.get(n).is_some(),
-                Mode::Light => themes_light.get(n).is_some(),
-            })
-            .unwrap_or_else(|| "opencode".to_string());
-        let theme = match theme_mode {
-            Mode::Dark => themes_dark.get(&theme_name),
-            Mode::Light => themes_light.get(&theme_name),
-        }
-        .cloned()
-        .unwrap_or_else(Theme::opencode);
 
         let mut prompt = TextArea::new(vec![String::new()]);
         prompt.set_cursor_line_style(ratatui::style::Style::default());
@@ -370,48 +352,13 @@ impl AppState {
             history_sessions: Vec::new(),
             kv,
             theme,
-            theme_name,
-            theme_mode,
-            themes_dark,
-            themes_light,
             theme_gen: 0,
             mcp_servers: Vec::new(),
             git_branch: None,
         }
     }
 
-    /// 切换主题（名称为去 .json 的文件名）；成功返回 true。
-    pub fn set_theme(&mut self, name: &str) -> bool {
-        let set = match self.theme_mode {
-            Mode::Dark => &self.themes_dark,
-            Mode::Light => &self.themes_light,
-        };
-        match set.get(name) {
-            Some(t) => {
-                self.theme = t.clone();
-                self.theme_name = name.to_string();
-                self.theme_gen = self.theme_gen.wrapping_add(1);
-                self.kv.data.theme = Some(name.to_string());
-                let _ = self.kv.save();
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// 切换 dark/light；当前主题在另一模式不存在时回退 opencode。
-    pub fn set_theme_mode(&mut self, mode: Mode) {
-        if mode == self.theme_mode {
-            return;
-        }
-        self.theme_mode = mode;
-        if !self.set_theme(&self.theme_name.clone()) {
-            self.set_theme("opencode");
-        }
-        // set_theme 已 bump gen 并保存；这里只需补齐 mode 字段
-        self.kv.data.theme_mode = mode.as_str().to_string();
-        let _ = self.kv.save();
-    }
+    /// 切换侧栏（M4：侧栏开关）。
     pub fn toggle_sidebar(&mut self) {
         self.sidebar = !self.sidebar;
         self.kv.data.sidebar = Some(self.sidebar);
@@ -518,32 +465,6 @@ impl AppState {
         if self.dialogs.is_empty() {
             self.push_dialog(commands::palette_dialog());
         }
-    }
-
-    /// 打开主题选择器（列出当前模式下全部成功解析的主题）。
-    pub fn open_theme_picker(&mut self) {
-        let names: Vec<String> = match self.theme_mode {
-            Mode::Dark => self.themes_dark.names().map(str::to_string).collect(),
-            Mode::Light => self.themes_light.names().map(str::to_string).collect(),
-        };
-        let items = names
-            .into_iter()
-            .map(|n| SelectItem {
-                hint: if n == self.theme_name {
-                    "active".to_string()
-                } else {
-                    String::new()
-                },
-                group: "Themes".to_string(),
-                label: n.clone(),
-                value: n,
-            })
-            .collect();
-        self.push_dialog(Dialog::Select(SelectState::new(
-            "switch theme",
-            SelectPurpose::Theme,
-            items,
-        )));
     }
 
     /// 打开模型选择器（至少列出当前模型）。

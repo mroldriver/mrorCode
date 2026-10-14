@@ -42,8 +42,8 @@
   },
   "theme": {
     "primary": {
-      "dark": "#1668dc",
-      "light": "lightStep9"
+      "dark": "#409EFF",
+      "light": "#409EFF"
     },
     "secondary": {
       "dark": "darkSecondary",

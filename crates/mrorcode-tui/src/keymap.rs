@@ -53,7 +53,6 @@ pub enum Action {
     NewSession,
     ListSessions,
     DeleteSession,
-    OpenThemePicker,
     ToggleSidebar,
     OpenModelPicker,
     OpenCommandPalette,
@@ -129,7 +128,6 @@ impl Action {
             Action::NewSession => "new_session",
             Action::ListSessions => "list_sessions",
             Action::DeleteSession => "delete_session",
-            Action::OpenThemePicker => "switch_theme",
             Action::ToggleSidebar => "toggle_sidebar",
             Action::OpenModelPicker => "switch_model",
             Action::OpenCommandPalette => "command_palette",
@@ -185,7 +183,6 @@ impl Action {
             "new_session" => Action::NewSession,
             "list_sessions" => Action::ListSessions,
             "delete_session" => Action::DeleteSession,
-            "switch_theme" => Action::OpenThemePicker,
             "toggle_sidebar" => Action::ToggleSidebar,
             "switch_model" => Action::OpenModelPicker,
             "command_palette" => Action::OpenCommandPalette,
@@ -705,7 +702,6 @@ fn default_bindings() -> Vec<Binding> {
         leader(PressCode::Char('n')),
         leader(PressCode::Char('l')),
         leader(PressCode::Char('b')),
-        leader(PressCode::Char('t')),
         leader(PressCode::Char('m')),
         leader(PressCode::Char('r')),
         leader(PressCode::Char('d')),
@@ -721,7 +717,6 @@ fn default_bindings() -> Vec<Binding> {
         Action::NewSession,
         Action::ListSessions,
         Action::ToggleSidebar,
-        Action::OpenThemePicker,
         Action::OpenModelPicker,
         Action::ToggleReasoning,
         Action::OpenDiffViewer,
@@ -929,10 +924,6 @@ mod tests {
             .keys_for(Action::ToggleSidebar)
             .iter()
             .any(|k| k == "leader b"));
-        assert!(km
-            .keys_for(Action::OpenThemePicker)
-            .iter()
-            .any(|k| k == "leader t"));
 
         let (km2, _) = Keymap::new(&[KeybindEntry {
             keys: "ctrl+k".into(),

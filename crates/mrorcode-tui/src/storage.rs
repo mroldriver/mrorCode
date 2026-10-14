@@ -21,10 +21,6 @@ pub struct KeybindEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KVData {
-    /// 主题名（文件名去 .json）。
-    pub theme: Option<String>,
-    /// dark / light。
-    pub theme_mode: String,
     pub sidebar: Option<bool>,
     /// 侧栏宽度（列数，默认 42）。
     pub sidebar_width: Option<u16>,
@@ -44,8 +40,6 @@ pub struct KVData {
 impl Default for KVData {
     fn default() -> Self {
         Self {
-            theme: None,
-            theme_mode: "dark".to_string(),
             sidebar: Some(true),
             sidebar_width: None,
             tabs: Some(true),
@@ -172,7 +166,6 @@ mod tests {
         let _ = std::fs::remove_file(&p);
         let (store, warnings) = Store::load_from(&p);
         assert!(warnings.is_empty());
-        assert_eq!(store.data.theme_mode, "dark");
         assert!(store.data.sidebar.unwrap());
     }
 
@@ -181,14 +174,12 @@ mod tests {
         let p = temp_path("roundtrip");
         let _ = std::fs::remove_file(&p);
         let (mut store, _) = Store::load_from(&p);
-        store.data.theme = Some("nord".into());
         store.data.model = Some("m-1".into());
         store.push_history("first");
         store.save().unwrap();
 
         let (loaded, warnings) = Store::load_from(&p);
         assert!(warnings.is_empty());
-        assert_eq!(loaded.data.theme.as_deref(), Some("nord"));
         assert_eq!(loaded.data.model.as_deref(), Some("m-1"));
         assert_eq!(loaded.data.prompt_history, vec!["first".to_string()]);
 
@@ -221,10 +212,9 @@ mod tests {
     fn corrupt_file_falls_back_without_panic() {
         let p = temp_path("corrupt");
         std::fs::write(&p, "{ not json").unwrap();
-        let (store, warnings) = Store::load_from(&p);
+        let (_store, warnings) = Store::load_from(&p);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("corrupt state"));
-        assert_eq!(store.data.theme_mode, "dark");
         // 旧文件保留未动
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{ not json");
         std::fs::remove_file(&p).ok();

@@ -20,7 +20,6 @@ pub(crate) const OVERLAY: ratatui::style::Color = ratatui::style::Color::Rgb(0x0
 /// 选择接受后要执行的动作类别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectPurpose {
-    Theme,
     Model,
     Session,
     Command,
@@ -556,13 +555,13 @@ mod tests {
 
     #[test]
     fn arrows_enter_returns_value_and_esc_closes() {
-        let mut sel = SelectState::new("p", SelectPurpose::Theme, sample());
+        let mut sel = SelectState::new("p", SelectPurpose::Command, sample());
         sel.on_key(&k(KeyCode::Down));
         sel.on_key(&k(KeyCode::Down));
         let accepted = sel.on_key(&k(KeyCode::Enter));
         assert!(matches!(
             accepted,
-            DialogOutcome::Accepted(SelectPurpose::Theme, v) if v == "model"
+            DialogOutcome::Accepted(SelectPurpose::Command, v) if v == "model"
         ));
 
         let closed = sel.on_key(&k(KeyCode::Esc));

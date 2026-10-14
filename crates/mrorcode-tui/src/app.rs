@@ -799,10 +799,6 @@ fn apply_action(
             state.toggle_sidebar();
             true
         }
-        OpenThemePicker => {
-            state.open_theme_picker();
-            true
-        }
         OpenModelPicker => {
             state.open_model_picker();
             true
@@ -872,11 +868,6 @@ fn apply_select(
     handle: &mrorcode_agent::RuntimeHandle,
 ) {
     match purpose {
-        SelectPurpose::Theme => {
-            if state.set_theme(&value) {
-                state.toast(format!("主题：{value}"));
-            }
-        }
         SelectPurpose::Command => {
             if let Some(cmd) = commands::command_by_id(&value) {
                 execute_command(state, cmd, handle);
@@ -1018,7 +1009,6 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         }
         AppCommand::ListSessions => state.open_session_picker(),
         AppCommand::DeleteSession => state.open_delete_active_confirm(),
-        AppCommand::OpenThemePicker => state.open_theme_picker(),
         AppCommand::OpenModelPicker => state.open_model_picker(),
         AppCommand::ToggleSidebar => state.toggle_sidebar(),
         AppCommand::TogglePlanMode => state.toggle_plan_mode(handle),
@@ -1705,27 +1695,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn leader_sequences_toggle_sidebar_and_open_themes() {
-        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut state = test_state();
-        let before = state.sidebar;
-        let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
-
-        // ctrl+x 然后 b：切换侧栏
-        on_key(&mut state, &ctrl_x, &handle);
-        assert!(state.leader_until.is_some());
-        assert!(on_key(&mut state, &k(KeyCode::Char('b')), &handle));
-        assert_ne!(state.sidebar, before);
-        assert!(state.leader_until.is_none());
-
-        // ctrl+x 然后 t：主题选择器
-        on_key(&mut state, &ctrl_x, &handle);
-        on_key(&mut state, &k(KeyCode::Char('t')), &handle);
-        assert_eq!(state.dialogs.len(), 1);
-        handle.shutdown();
-    }
-
-    #[tokio::test]
     async fn expired_leader_falls_through_to_editing() {
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
         let mut state = test_state();
@@ -2142,74 +2111,6 @@ mod tests {
         on_key(&mut state, &k(KeyCode::Enter), &handle);
         assert!(state.dialogs.is_empty());
         assert_ne!(state.sidebar, before);
-        handle.shutdown();
-    }
-
-    #[tokio::test]
-    async fn command_palette_chains_into_theme_picker() {
-        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut state = test_state();
-
-        on_key(
-            &mut state,
-            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-            &handle,
-        );
-        for ch in "theme".chars() {
-            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
-        }
-        on_key(&mut state, &k(KeyCode::Enter), &handle);
-
-        // 面板出栈后立即压入主题选择器
-        assert_eq!(state.dialogs.len(), 1);
-        use crate::widgets::dialog::Dialog;
-        if let Dialog::Select(s) = &state.dialogs[0] {
-            use crate::widgets::dialog::select::SelectPurpose as P;
-            assert_eq!(s.purpose(), P::Theme);
-            assert!(!s.is_empty(), "内置 opencode 主题应可选");
-        }
-        handle.shutdown();
-    }
-
-    #[tokio::test]
-    async fn select_dialog_filters_and_applies_theme() {
-        use crate::widgets::dialog::select::SelectItem;
-        use crate::widgets::dialog::{select::SelectState, Dialog, SelectPurpose};
-
-        let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
-        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut state = test_state();
-        let items = vec!["opencode", "dracula", "tokyonight"]
-            .into_iter()
-            .map(|n| SelectItem {
-                label: n.into(),
-                hint: String::new(),
-                group: "Dark".into(),
-                value: n.into(),
-            })
-            .collect();
-        state.push_dialog(Dialog::Select(SelectState::new(
-            "switch theme",
-            SelectPurpose::Theme,
-            items,
-        )));
-
-        for ch in "op".chars() {
-            on_key(&mut state, &k(KeyCode::Char(ch)), &handle);
-        }
-        term.draw(|f| draw(f, &mut state)).unwrap();
-        assert!(buffer_contains(&term, "opencode"));
-        assert!(!buffer_contains(&term, "dracula"));
-
-        // Enter 应用、对话框出栈、KV 记住
-        on_key(&mut state, &k(KeyCode::Enter), &handle);
-        assert!(state.dialogs.is_empty());
-        assert_eq!(state.theme_name, "opencode");
-        assert_eq!(state.kv.data.theme.as_deref(), Some("opencode"));
-
-        // Esc 在无对话框空闲时不再退出（避免误触），仅被吞掉
-        on_key(&mut state, &k(KeyCode::Esc), &handle);
-        assert!(!state.should_quit);
         handle.shutdown();
     }
 

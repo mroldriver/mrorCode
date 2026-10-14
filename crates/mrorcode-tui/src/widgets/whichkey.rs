@@ -63,7 +63,6 @@ pub fn action_label(a: Action) -> &'static str {
         Action::NewSession => "新会话",
         Action::ListSessions => "会话列表",
         Action::DeleteSession => "删除会话",
-        Action::OpenThemePicker => "主题选择",
         Action::ToggleSidebar => "切换侧边栏",
         Action::OpenModelPicker => "模型选择",
         Action::OpenCommandPalette => "命令面板",
@@ -120,8 +119,7 @@ pub fn action_group(a: Action) -> &'static str {
         | Action::BackgroundTask
         | Action::OpenTimeline
         | Action::ExportTranscript => "Session",
-        Action::OpenThemePicker
-        | Action::ToggleSidebar
+        Action::ToggleSidebar
         | Action::NextSession
         | Action::PrevSession
         | Action::ToggleReasoning
