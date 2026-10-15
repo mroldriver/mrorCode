@@ -53,14 +53,14 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
 
     let mut lines: Vec<ratatui::text::Line> = vec![
         ratatui::text::Line::from(ratatui::text::Span::styled(
-            "Permission required",
+            "需要授权",
             Style::default()
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         )),
         ratatui::text::Line::raw(""),
         ratatui::text::Line::from(vec![
-            ratatui::text::Span::styled("tool: ", Style::default().fg(theme.text_muted)),
+            ratatui::text::Span::styled("工具：", Style::default().fg(theme.text_muted)),
             ratatui::text::Span::styled(req.tool.clone(), Style::default().fg(theme.primary)),
         ]),
         ratatui::text::Line::from(ratatui::text::Span::styled(

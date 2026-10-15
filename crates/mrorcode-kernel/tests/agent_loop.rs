@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures::stream::{once, pending, BoxStream, StreamExt};
 use serde_json::json;
 
-use mrorcode_kernel::event::AgentEvent;
+use mrorcode_kernel::event::{AgentEvent, PermissionMode};
 use mrorcode_kernel::message::ToolCall;
 use mrorcode_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use mrorcode_kernel::provider::{ChatOptions, LlmProvider, ProviderResult, StreamEvent};
@@ -81,7 +81,7 @@ impl Tool for BigTool {
     }
 }
 
-/// 默认 Risky 的工具（plan 模式应被拒绝）。
+/// 默认 Risky 的工具（只读模式应被拒绝）。
 struct RiskyTool;
 
 #[async_trait]
@@ -98,6 +98,28 @@ impl Tool for RiskyTool {
     // 不覆盖 risk() → 默认 Risky
     async fn execute(&self, _arguments: &str, _ctx: &ToolContext<'_>) -> ToolResult {
         ToolResult::ok("risky-1", "wrote")
+    }
+}
+
+/// WorkspaceWrite 级别的工具（模拟 edit/write：工作区内写）。
+struct WorkspaceWriteTool;
+
+#[async_trait]
+impl Tool for WorkspaceWriteTool {
+    fn name(&self) -> &str {
+        "ws_write"
+    }
+    fn description(&self) -> &str {
+        "writes inside workspace"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self, _arguments: &serde_json::Value) -> RiskLevel {
+        RiskLevel::WorkspaceWrite
+    }
+    async fn execute(&self, _arguments: &str, _ctx: &ToolContext<'_>) -> ToolResult {
+        ToolResult::ok("ws-1", "wrote")
     }
 }
 
@@ -504,7 +526,7 @@ async fn rewind_truncates_loaded_session_turns() {
 }
 
 #[tokio::test]
-async fn plan_mode_blocks_risky_tools() {
+async fn read_only_mode_blocks_risky_tools() {
     let mut reg = ToolRegistry::new();
     reg.insert(Arc::new(RiskyTool));
     let provider = ScriptedProvider::new(vec![
@@ -516,10 +538,7 @@ async fn plan_mode_blocks_risky_tools() {
         .tools(reg)
         .spawn();
 
-    handle
-        .commands
-        .send(AgentCommand::SetPlanMode(true))
-        .unwrap();
+    handle.commands.send(AgentCommand::SetMode(PermissionMode::ReadOnly)).unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {
@@ -536,11 +555,44 @@ async fn plan_mode_blocks_risky_tools() {
             _ => None,
         })
         .expect("risky result");
-    assert!(result.contains("plan mode"), "{result}");
+    assert!(result.contains("read-only mode"), "{result}");
 }
 
 #[tokio::test]
-async fn plan_mode_allows_safe_tools() {
+async fn read_only_mode_blocks_workspace_write_tools() {
+    let mut reg = ToolRegistry::new();
+    reg.insert(Arc::new(WorkspaceWriteTool));
+    let provider = ScriptedProvider::new(vec![
+        single_tool_call_script("", "c1", "ws_write", json!({})),
+        text_script("done"),
+    ]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(reg)
+        .spawn();
+
+    handle.commands.send(AgentCommand::SetMode(PermissionMode::ReadOnly)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "write something".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult { name, content, .. } if name == "ws_write" => Some(content),
+            _ => None,
+        })
+        .expect("ws_write result");
+    assert!(result.contains("read-only mode"), "{result}");
+}
+
+#[tokio::test]
+async fn read_only_mode_allows_safe_tools() {
     let mut reg = ToolRegistry::new();
     reg.insert(Arc::new(BigTool { size: 4 }));
     let provider = ScriptedProvider::new(vec![
@@ -552,10 +604,7 @@ async fn plan_mode_allows_safe_tools() {
         .tools(reg)
         .spawn();
 
-    handle
-        .commands
-        .send(AgentCommand::SetPlanMode(true))
-        .unwrap();
+    handle.commands.send(AgentCommand::SetMode(PermissionMode::ReadOnly)).unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {
@@ -565,7 +614,7 @@ async fn plan_mode_allows_safe_tools() {
         .unwrap();
     let events = drain_until_terminal(&mut handle).await;
 
-    // BigTool 为 Safe：应正常执行而非被 plan 拒绝
+    // BigTool 为 Safe：应正常执行而非被只读 gate 拒绝
     let result = events
         .iter()
         .find_map(|e| match e {
@@ -573,7 +622,76 @@ async fn plan_mode_allows_safe_tools() {
             _ => None,
         })
         .expect("big result");
-    assert!(!result.contains("plan mode"));
+    assert!(!result.contains("read-only mode"));
+}
+
+#[tokio::test]
+async fn workspace_mode_allows_workspace_write_without_approval() {
+    let mut reg = ToolRegistry::new();
+    reg.insert(Arc::new(WorkspaceWriteTool));
+    let provider = ScriptedProvider::new(vec![
+        single_tool_call_script("", "c1", "ws_write", json!({})),
+        text_script("done"),
+    ]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(reg)
+        .add_middleware(Arc::new(DenyAll)) // 若走审批/middleware 即被拒
+        .spawn();
+
+    handle.commands.send(AgentCommand::SetMode(PermissionMode::Workspace)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "write something".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    // WorkspaceWrite 在工作区读写模式下直行，不经过 middleware
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult { name, content, .. } if name == "ws_write" => Some(content),
+            _ => None,
+        })
+        .expect("ws_write result");
+    assert_eq!(result, "wrote");
+}
+
+#[tokio::test]
+async fn full_mode_skips_approval_middleware() {
+    let mut reg = ToolRegistry::new();
+    reg.insert(Arc::new(RiskyTool));
+    let provider = ScriptedProvider::new(vec![
+        single_tool_call_script("", "c1", "risky", json!({})),
+        text_script("done"),
+    ]);
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(reg)
+        .add_middleware(Arc::new(DenyAll)) // 完全访问下应被跳过
+        .spawn();
+
+    handle.commands.send(AgentCommand::SetMode(PermissionMode::Full)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "do anything".into(),
+        })
+        .unwrap();
+    let events = drain_until_terminal(&mut handle).await;
+
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolResult { name, content, .. } if name == "risky" => Some(content),
+            _ => None,
+        })
+        .expect("risky result");
+    assert_eq!(result, "wrote");
 }
 
 // ---------------- conformance 套件（M5-d） ----------------

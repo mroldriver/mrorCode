@@ -133,10 +133,10 @@ pub fn registry() -> &'static [CommandSpec] {
         },
         CommandSpec {
             command: AppCommand::TogglePlanMode,
-            name: "toggle plan mode",
-            desc: "切换 plan 模式（只读）",
+            name: "切换权限模式",
+            desc: "循环切换权限模式（只读 / 工作区读写 / 完全访问），Shift+Tab 循环（普通 Tab 留给输入/补全）",
             category: CommandCategory::App,
-            default_keys: &["tab", "shift+tab"],
+            default_keys: &["shift+tab"],
         },
         CommandSpec {
             command: AppCommand::CycleModel,
@@ -277,7 +277,7 @@ pub fn command_id(cmd: AppCommand) -> &'static str {
         AppCommand::OpenModelPicker => "switch_model",
         AppCommand::OpenCommandPalette => "command_palette",
         AppCommand::OpenHelp => "help",
-        AppCommand::TogglePlanMode => "toggle_plan_mode",
+        AppCommand::TogglePlanMode => "cycle_permission_mode",
         AppCommand::CycleModel => "cycle_model",
         AppCommand::ToggleWhichKey => "toggle_which_key",
         AppCommand::ToggleWhichKeyLayout => "toggle_which_key_layout",
@@ -426,7 +426,7 @@ mod tests {
             Some(AppCommand::OpenCommandPalette)
         );
         assert_eq!(
-            parse_slash_command("/toggle-plan-mode"),
+            parse_slash_command("/切换权限模式"),
             Some(AppCommand::TogglePlanMode)
         );
         assert_eq!(

@@ -104,11 +104,11 @@ pub fn render(state: &mut AppState, area: Rect, buf: &mut Buffer, theme: &Theme)
         width: panel.width - 1 - pad_left - pad_right,
         height: 1,
     };
-    // 配色对齐 opencode：只有 "Build" 模式徽章用主色（加粗），
+    // 配色对齐 opencode：只有权限模式徽章用主色（加粗），
     // 模型名用普通前景色、provider 用 muted——避免整行像链接一样发蓝。
     let mut model_spans = vec![
         Span::styled(
-            "Build",
+            state.mode.label(),
             Style::default()
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),

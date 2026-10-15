@@ -3,6 +3,39 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// 权限模式（三档）：决定工具执行前的 gate 策略。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    /// 只读：仅 Safe 工具可执行，其余一律拒绝（原 plan 模式）。
+    ReadOnly,
+    /// 工作区读写：Safe / WorkspaceWrite 直行，Risky 走审批（默认）。
+    #[default]
+    Workspace,
+    /// 完全访问：不做 gate，也跳过审批。
+    Full,
+}
+
+impl PermissionMode {
+    /// 循环切换顺序：只读 → 工作区读写 → 完全访问 → 只读。
+    pub fn next(self) -> Self {
+        match self {
+            PermissionMode::ReadOnly => PermissionMode::Workspace,
+            PermissionMode::Workspace => PermissionMode::Full,
+            PermissionMode::Full => PermissionMode::ReadOnly,
+        }
+    }
+
+    /// 中文显示名（TUI 徽章/提示用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            PermissionMode::ReadOnly => "只读",
+            PermissionMode::Workspace => "工作区读写",
+            PermissionMode::Full => "完全访问",
+        }
+    }
+}
+
 /// driver → agent 的命令。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AgentCommand {
@@ -15,8 +48,8 @@ pub enum AgentCommand {
     },
     /// 切换模型（在当前轮次结束后的下一轮生效）。
     SetModel(String),
-    /// 切换 plan 模式：开启后 Risky 工具被直接拒绝（只读 gate）。
-    SetPlanMode(bool),
+    /// 切换权限模式（只读 / 工作区读写 / 完全访问）。
+    SetMode(PermissionMode),
     /// 回应一个 [`AgentEvent::Request`]（审批等）。
     Respond(u64, Value),
     /// 回退（rewind）：把会话截断到保留最早 `keep_turns` 个 user turn；空闲时生效（M4-9）。

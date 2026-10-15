@@ -57,7 +57,8 @@ impl Tool for EditFileTool {
     }
 
     fn risk(&self, _arguments: &serde_json::Value) -> RiskLevel {
-        RiskLevel::Risky
+        // 工作区内的文件编辑：只读模式拒绝，工作区读写模式直行
+        RiskLevel::WorkspaceWrite
     }
 
     async fn execute(&self, arguments: &str, ctx: &ToolContext<'_>) -> ToolResult {

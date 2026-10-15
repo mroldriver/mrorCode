@@ -278,11 +278,9 @@ async fn apply_provider_switch(
     // 4) 恢复当前会话体到新 runtime。
     handle.resume(session_id, conversation);
 
-    // 5) 更新投影；plan 模式需重新下发给新 kernel。
+    // 5) 更新投影；权限模式需重新下发给新 kernel。
     state.note_provider_switched(provider_name.clone(), new_model.clone(), new_available);
-    if state.plan_mode {
-        handle.set_plan_mode(true);
-    }
+    handle.set_mode(state.mode);
     prompt::style_textarea(state, &state.theme.clone());
     state.toast(format!(
         "已切换 provider：{provider_name} · 模型 {new_model}"
@@ -1011,7 +1009,7 @@ fn execute_command(state: &mut AppState, cmd: AppCommand, handle: &mrorcode_agen
         AppCommand::DeleteSession => state.open_delete_active_confirm(),
         AppCommand::OpenModelPicker => state.open_model_picker(),
         AppCommand::ToggleSidebar => state.toggle_sidebar(),
-        AppCommand::TogglePlanMode => state.toggle_plan_mode(handle),
+        AppCommand::TogglePlanMode => state.cycle_mode(false, handle),
         AppCommand::CycleModel => state.cycle_model(false, handle),
         AppCommand::ToggleWhichKey => state.toggle_which_key(),
         AppCommand::ToggleWhichKeyLayout => state.toggle_which_key_layout(),
@@ -1510,8 +1508,8 @@ mod tests {
         term.draw(|f| draw(f, &mut state)).unwrap();
         // Logo（中文标题）
         assert!(buffer_contains(&term, "欧"));
-        // 模型行：Build 徽章 + 当前模型
-        let meta_row = row_of(&term, "Build").expect("元信息行存在");
+        // 模型行：权限模式徽章 + 当前模型（CJK 字符单元格间有填充空格，用模糊匹配）
+        let meta_row = row_of(&term, "工 作 区 读 写").expect("元信息行存在");
         // 键位提示行：ctrl+p commands
         let hint_row = row_of(&term, "ctrl+p").expect("键位提示行存在");
 
@@ -2241,14 +2239,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tab_cycles_agent_plan_mode() {
+    async fn shift_tab_cycles_permission_mode() {
+        use mrorcode_agent::PermissionMode;
         let (handle, _rx) = start_runtime(ScriptedProvider::new(vec![text_script("x")]));
         let mut state = test_state();
-        assert!(!state.plan_mode);
+        // 对齐 atomcode 默认：普通 Tab 不切模式（留给输入/补全）
+        assert_eq!(state.mode, PermissionMode::Workspace);
         on_key(&mut state, &k(KeyCode::Tab), &handle);
-        assert!(state.plan_mode);
+        assert_eq!(state.mode, PermissionMode::Workspace, "普通 Tab 不应切模式");
+        // Shift+Tab 正向循环：工作区读写 → 完全访问 → 只读 → 工作区读写
         on_key(&mut state, &k(KeyCode::BackTab), &handle);
-        assert!(!state.plan_mode);
+        assert_eq!(state.mode, PermissionMode::Full);
+        on_key(&mut state, &k(KeyCode::BackTab), &handle);
+        assert_eq!(state.mode, PermissionMode::ReadOnly);
+        on_key(&mut state, &k(KeyCode::BackTab), &handle);
+        assert_eq!(state.mode, PermissionMode::Workspace);
         handle.shutdown();
     }
 

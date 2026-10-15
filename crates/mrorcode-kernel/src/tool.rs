@@ -16,7 +16,11 @@ use crate::request::Requester;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
+    /// 纯只读，任何模式都可直接执行。
     Safe,
+    /// 限定在工作目录内的写（edit/write 工具）；只读模式下仍被拒绝。
+    WorkspaceWrite,
+    /// 副作用超出工作区（bash 写命令、网络、子 agent 等），需审批。
     Risky,
 }
 
@@ -74,7 +78,7 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;
 
-    /// 风险建议。安全默认返回 Risky，只读工具覆盖为 Safe。
+    /// 风险建议。安全默认返回 Risky，只读工具覆盖为 Safe，工作区写覆盖为 WorkspaceWrite。
     fn risk(&self, _arguments: &Value) -> RiskLevel {
         RiskLevel::Risky
     }

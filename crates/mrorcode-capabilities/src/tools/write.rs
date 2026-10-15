@@ -55,7 +55,8 @@ impl Tool for WriteFileTool {
     }
 
     fn risk(&self, _arguments: &serde_json::Value) -> RiskLevel {
-        RiskLevel::Risky
+        // 工作区内的文件写入：只读模式拒绝，工作区读写模式直行
+        RiskLevel::WorkspaceWrite
     }
 
     async fn execute(&self, arguments: &str, ctx: &ToolContext<'_>) -> ToolResult {

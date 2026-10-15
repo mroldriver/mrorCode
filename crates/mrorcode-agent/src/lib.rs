@@ -9,4 +9,5 @@ pub use assemble::{
     AssembleOptions, Assembly, InitialModel,
 };
 pub use mrorcode_capabilities::session::{SessionStore, SESSIONS_DIR};
+pub use mrorcode_kernel::PermissionMode;
 pub use runtime::{start, DriverCommand, RuntimeEvent, RuntimeHandle, RuntimeStart};

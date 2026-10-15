@@ -27,8 +27,8 @@ pub enum DriverCommand {
         conversation: mrorcode_kernel::message::Conversation,
     },
     SetModel(String),
-    /// 切换 plan 模式（只读 gate）。
-    SetPlanMode(bool),
+    /// 切换权限模式（只读 / 工作区读写 / 完全访问）。
+    SetMode(mrorcode_kernel::PermissionMode),
     Respond(u64, Value),
     /// 回退会话到保留最早 `keep_turns` 个 user turn（M4-9）。
     Rewind {
@@ -75,8 +75,8 @@ impl RuntimeHandle {
         let _ = self.commands.send(DriverCommand::SetModel(model.into()));
     }
 
-    pub fn set_plan_mode(&self, on: bool) {
-        let _ = self.commands.send(DriverCommand::SetPlanMode(on));
+    pub fn set_mode(&self, mode: mrorcode_kernel::PermissionMode) {
+        let _ = self.commands.send(DriverCommand::SetMode(mode));
     }
 
     pub fn respond(&self, id: u64, value: Value) {
@@ -175,10 +175,10 @@ pub fn start(start: RuntimeStart) -> (RuntimeHandle, UnboundedReceiver<RuntimeEv
                                 .commands
                                 .send(AgentCommand::SetModel(model));
                         }
-                        Some(DriverCommand::SetPlanMode(on)) => {
+                        Some(DriverCommand::SetMode(mode)) => {
                             let _ = agent_handle
                                 .commands
-                                .send(AgentCommand::SetPlanMode(on));
+                                .send(AgentCommand::SetMode(mode));
                         }
                         Some(DriverCommand::Respond(id, value)) => {
                             let _ = agent_handle.commands.send(AgentCommand::Respond(id, value));

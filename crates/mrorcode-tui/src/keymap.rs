@@ -628,8 +628,7 @@ fn default_bindings() -> Vec<Binding> {
         // ↑↓：空输入框滚聊天，有内容时 textarea 移光标（apply_action 内判断）
         b(false, key(PressCode::Up), Action::ScrollUp),
         b(false, key(PressCode::Down), Action::ScrollDown),
-        // 对齐 opencode：Tab/Shift+Tab 循环 agent（build/plan）
-        b(false, key(PressCode::Tab), Action::CycleAgent),
+        // 对齐 atomcode 默认：普通 Tab 留给输入/补全，Shift+Tab 正向循环权限模式
         b(
             false,
             KeyPress {
@@ -638,7 +637,7 @@ fn default_bindings() -> Vec<Binding> {
                 alt: false,
                 shift: true,
             },
-            Action::CycleAgentReverse,
+            Action::CycleAgent,
         ),
         // 对齐 opencode：ctrl+alt+k 开关 which-key；加 shift 切布局
         b(
@@ -966,11 +965,12 @@ mod tests {
     fn opencode_parity_defaults() {
         let km = Keymap::default();
         let has = |a: Action, k: &str| km.keys_for(a).iter().any(|x| x == k);
-        // F2 循环模型、Tab 循环 agent
+        // F2 循环模型、Shift+Tab 循环权限模式（对齐 atomcode 默认：普通 Tab 留给输入）
         assert!(has(Action::CycleModel, "f2"));
         assert!(has(Action::CycleModelReverse, "shift+f2"));
-        assert!(has(Action::CycleAgent, "tab"));
-        assert!(has(Action::CycleAgentReverse, "shift+tab"));
+        assert!(has(Action::CycleAgent, "shift+tab"));
+        assert!(!has(Action::CycleAgent, "tab"));
+        assert!(!has(Action::CycleAgentReverse, "shift+tab"));
         // which-key 开关/布局/导航
         assert!(has(Action::ToggleWhichKey, "ctrl+alt+k"));
         assert!(has(Action::ToggleWhichKeyLayout, "ctrl+alt+shift+k"));

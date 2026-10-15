@@ -112,8 +112,12 @@ pub fn meta_line(state: &AppState, theme: &Theme) -> Line<'static> {
             ));
         }
         Phase::Idle => {
-            if state.plan_mode {
-                spans.push(Span::styled("plan ", Style::default().fg(theme.warning)));
+            if state.mode != mrorcode_agent::PermissionMode::Workspace {
+                // 非默认档才显示徽标（对齐 opencode：默认 Build 不标）
+                spans.push(Span::styled(
+                    format!("{} ", state.mode.label()),
+                    Style::default().fg(theme.warning),
+                ));
             }
             spans.push(Span::styled(
                 state.model.clone(),

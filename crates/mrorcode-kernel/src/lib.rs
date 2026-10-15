@@ -17,7 +17,7 @@ pub mod tool;
 pub mod testkit;
 
 pub use agent::{AgentBuilder, AgentHandle};
-pub use event::{AgentCommand, AgentEvent, StopReason};
+pub use event::{AgentCommand, AgentEvent, PermissionMode, StopReason};
 pub use message::{Conversation, Message, Role, ToolCall};
 pub use middleware::{BeforeOutcome, ToolMiddleware};
 pub use provider::{ChatOptions, LlmProvider, ProviderError, StreamEvent, ToolChoice};

@@ -164,7 +164,7 @@ impl AgentBuilder {
             max_tool_result_bytes: self.max_tool_result_bytes,
             chat_options: self.chat_options,
             compaction: self.compaction,
-            plan_mode: false,
+            mode: crate::event::PermissionMode::default(),
         };
         tokio::spawn(async move {
             run_agent(&mut state, cmd_rx, evt_tx).await;
@@ -190,7 +190,7 @@ struct AgentState {
     max_tool_result_bytes: usize,
     chat_options: ChatOptions,
     compaction: CompactionPolicy,
-    plan_mode: bool,
+    mode: crate::event::PermissionMode,
 }
 
 impl AgentState {
@@ -241,7 +241,7 @@ async fn run_agent(
             max_tool_result_bytes: state.max_tool_result_bytes,
             chat_options: state.chat_options.clone(),
             compaction: state.compaction,
-            plan_mode: state.plan_mode,
+            mode: state.mode,
             requester: broker.handle(),
             events,
             cancel: cancel.clone(),
@@ -285,8 +285,8 @@ async fn run_agent(
                     Some(AgentCommand::SetModel(model)) => {
                         state.chat_options.model = Some(model);
                     }
-                    Some(AgentCommand::SetPlanMode(on)) => {
-                        state.plan_mode = on;
+                    Some(AgentCommand::SetMode(mode)) => {
+                        state.mode = mode;
                     }
                     Some(AgentCommand::LoadSession { session_id, conversation }) => {
                         state.conversations.insert(session_id, conversation);
@@ -366,7 +366,7 @@ struct TurnCtx {
     max_tool_result_bytes: usize,
     chat_options: ChatOptions,
     compaction: CompactionPolicy,
-    plan_mode: bool,
+    mode: crate::event::PermissionMode,
     requester: crate::request::Requester,
     events: UnboundedSender<AgentEvent>,
     cancel: CancellationToken,
@@ -560,8 +560,19 @@ impl TurnCtx {
                 let risk = tool.risk(&args_value);
                 let mut live_call = call.clone();
 
-                // plan 模式：Risky 工具直接拒绝（优先于审批，不弹窗）。
-                if self.plan_mode && risk == crate::tool::RiskLevel::Risky {
+                // 权限 gate（优先于审批，不弹窗）：
+                // 只读模式拒绝一切非 Safe 工具；工作区读写放行 WorkspaceWrite，
+                // Risky 交给审批中间件；完全访问不做 gate。
+                let mode_blocked = match (self.mode, risk) {
+                    (crate::event::PermissionMode::ReadOnly, crate::tool::RiskLevel::Safe) => false,
+                    (crate::event::PermissionMode::ReadOnly, _) => true,
+                    (crate::event::PermissionMode::Workspace, crate::tool::RiskLevel::Risky) => {
+                        false
+                    }
+                    (crate::event::PermissionMode::Workspace, _) => false,
+                    (crate::event::PermissionMode::Full, _) => false,
+                };
+                if mode_blocked {
                     let preview = one_line_preview(&live_call.arguments);
                     self.emit(AgentEvent::ToolStarted {
                         id: call.id.clone(),
@@ -572,7 +583,7 @@ impl TurnCtx {
                         call.id.clone(),
                         json!({
                             "status": "blocked",
-                            "reason": format!("plan mode: `{}` is a write operation; only read-only tools are allowed ({preview})", call.name),
+                            "reason": format!("read-only mode: `{}` is a write operation; only read-only tools are allowed ({preview})", call.name),
                         })
                         .to_string(),
                     );
@@ -583,17 +594,19 @@ impl TurnCtx {
                     continue;
                 }
 
-                // middleware before（注册序）
+                // 完全访问：跳过审批等 middleware（用户已显式授权全部操作）。
                 let mut denied: Option<String> = None;
-                for mw in &self.middleware {
-                    match mw
-                        .before(&mut live_call, risk, &tool, &self.requester, &self.cancel)
-                        .await
-                    {
-                        BeforeOutcome::Proceed | BeforeOutcome::Allow { .. } => continue,
-                        BeforeOutcome::Deny { reason } => {
-                            denied = Some(reason);
-                            break;
+                if self.mode != crate::event::PermissionMode::Full {
+                    for mw in &self.middleware {
+                        match mw
+                            .before(&mut live_call, risk, &tool, &self.requester, &self.cancel)
+                            .await
+                        {
+                            BeforeOutcome::Proceed | BeforeOutcome::Allow { .. } => continue,
+                            BeforeOutcome::Deny { reason } => {
+                                denied = Some(reason);
+                                break;
+                            }
                         }
                     }
                 }

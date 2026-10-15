@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use tui_textarea::TextArea;
 
-use mrorcode_agent::{RuntimeHandle, SessionStore};
+use mrorcode_agent::{PermissionMode, RuntimeHandle, SessionStore};
 use mrorcode_kernel::event::AgentEvent;
 use mrorcode_kernel::message::{Conversation, Message, ToolCall};
 use mrorcode_kernel::session::{SessionRecord, SessionSummary};
@@ -205,8 +205,8 @@ pub struct AppState {
     /// leader 等待窗口截止时刻。
     pub leader_until: Option<Instant>,
 
-    /// plan 模式（只读 gate）；底栏徽标 + 提交时告知 kernel。
-    pub plan_mode: bool,
+    /// 权限模式（只读 / 工作区读写 / 完全访问）；底栏徽标 + 提交时告知 kernel。
+    pub mode: PermissionMode,
 
     /// `@`/`/` 补全浮层状态（None 表示未激活）。
     pub completion: Option<crate::input::Completion>,
@@ -336,7 +336,7 @@ impl AppState {
             cursor_blink_on: true,
             keymap,
             leader_until: None,
-            plan_mode: false,
+            mode: PermissionMode::default(),
             completion: None,
             selection: None,
             select_mode: false,
@@ -373,10 +373,33 @@ impl AppState {
         let _ = self.kv.save();
     }
 
-    /// 切换 plan 模式并通知 kernel（只读 gate）。
-    pub fn toggle_plan_mode(&mut self, handle: &RuntimeHandle) {
-        let on = !self.plan_mode;
-        self.set_plan_mode(on, handle);
+    /// 循环切换权限模式并通知 kernel（只读 → 工作区读写 → 完全访问）。
+    pub fn cycle_mode(&mut self, reverse: bool, handle: &RuntimeHandle) {
+        let next = if reverse {
+            // 反向：工作区读写 → 只读，完全访问 → 工作区读写，只读 → 完全访问
+            match self.mode {
+                PermissionMode::ReadOnly => PermissionMode::Full,
+                PermissionMode::Workspace => PermissionMode::ReadOnly,
+                PermissionMode::Full => PermissionMode::Workspace,
+            }
+        } else {
+            self.mode.next()
+        };
+        self.set_mode(next, handle);
+    }
+
+    /// 直接设置权限模式并通知 kernel（custom 命令 / provider 切换重发用）。
+    pub fn set_mode(&mut self, mode: PermissionMode, handle: &RuntimeHandle) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        handle.set_mode(mode);
+        self.toast(match mode {
+            PermissionMode::ReadOnly => "只读模式：仅只读工具，写操作将被拒绝",
+            PermissionMode::Workspace => "工作区读写：工作区写直行，其他写操作需审批",
+            PermissionMode::Full => "完全访问：所有工具直接执行，不再弹审批",
+        });
     }
 
     // ---------- 输入补全（@文件 / /命令） ----------
@@ -746,22 +769,11 @@ impl AppState {
         self.toast(format!("模型：{name}（下一轮生效）"));
     }
 
-    // ---------- agent 循环（对齐 opencode Tab：build/plan） ----------
+    // ---------- agent 循环（对齐 opencode Tab：权限模式三档循环） ----------
 
-    /// 在 build/plan 之间切换并通知 kernel。
+    /// Tab/Shift+Tab 循环切换权限模式并通知 kernel。
     pub fn cycle_agent(&mut self, reverse: bool, handle: &RuntimeHandle) {
-        let _ = reverse;
-        self.set_plan_mode(!self.plan_mode, handle);
-    }
-
-    fn set_plan_mode(&mut self, on: bool, handle: &RuntimeHandle) {
-        self.plan_mode = on;
-        handle.set_plan_mode(on);
-        if on {
-            self.toast("plan 模式：仅只读工具，写操作将被拒绝");
-        } else {
-            self.toast("已退出 plan 模式");
-        }
+        self.cycle_mode(reverse, handle);
     }
 
     // ---------- which-key 开关（对齐 opencode） ----------
@@ -1666,9 +1678,14 @@ impl AppState {
                 if session_id == self.active_session
                     && matches!(name.as_str(), "plan_enter" | "plan_exit") =>
             {
-                let on = name == "plan_enter";
-                if self.plan_mode != on {
-                    self.set_plan_mode(on, handle);
+                // 兼容旧 custom 命令：plan_enter → 只读，plan_exit → 工作区读写
+                let mode = if name == "plan_enter" {
+                    PermissionMode::ReadOnly
+                } else {
+                    PermissionMode::Workspace
+                };
+                if self.mode != mode {
+                    self.set_mode(mode, handle);
                 }
             }
             _ => {}
