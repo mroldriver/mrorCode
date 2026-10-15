@@ -594,9 +594,20 @@ impl TurnCtx {
                     continue;
                 }
 
-                // 完全访问：跳过审批等 middleware（用户已显式授权全部操作）。
+                // 审批 middleware gate：
+                // - Full 模式：全部跳过（用户已显式授权）。
+                // - Workspace 模式：仅 WorkspaceWrite 跳过（直行）；Safe / Risky 仍走 middleware。
+                //   Safe 工具读操作无害，但保留 middleware 可观测性（日志/审计）。
+                // - ReadOnly 模式：非 Safe 已在上面 mode_blocked 拦截，Safe 仍走 middleware。
+                let skip_mw = match self.mode {
+                    crate::event::PermissionMode::Full => true,
+                    crate::event::PermissionMode::Workspace => {
+                        risk == crate::tool::RiskLevel::WorkspaceWrite
+                    }
+                    crate::event::PermissionMode::ReadOnly => false,
+                };
                 let mut denied: Option<String> = None;
-                if self.mode != crate::event::PermissionMode::Full {
+                if !skip_mw {
                     for mw in &self.middleware {
                         match mw
                             .before(&mut live_call, risk, &tool, &self.requester, &self.cancel)

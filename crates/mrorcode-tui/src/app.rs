@@ -431,26 +431,57 @@ fn handle_select_key(state: &mut AppState, key: &KeyEvent) -> bool {
 
 /// 处理一个按键；返回是否需要重绘。
 fn on_key(state: &mut AppState, key: &KeyEvent, handle: &mrorcode_agent::RuntimeHandle) -> bool {
-    // modal 层：审批弹窗优先吃键（上下选择 + 回车确认，y/a/n 为快捷键）
+    // modal 层：审批弹窗优先吃键（横向导航 + 回车确认，reject 阶段可输入原因）
     if state.permission.is_some() {
+        let stage = state.permission.as_ref().map(|r| r.stage);
+
+        // reject 阶段：字符直接输入到 reject_message
+        if stage == Some(crate::store::PermissionStage::Reject) {
+            match key.code {
+                KeyCode::Enter => state.permission_confirm(handle),
+                KeyCode::Esc => state.permission_escape(handle),
+                KeyCode::Backspace => {
+                    if let Some(req) = state.permission.as_mut() {
+                        req.reject_message.pop();
+                    }
+                    return true;
+                }
+                KeyCode::Char(c) => {
+                    if let Some(req) = state.permission.as_mut() {
+                        req.reject_message.push(c);
+                    }
+                    return true;
+                }
+                _ => return false,
+            }
+            return true;
+        }
+
+        // permission / always_confirm 阶段：横向导航
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                state.permission_cursor = (state.permission_cursor + 2) % 3;
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
+                state.permission_cycle(-1);
                 return true;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                state.permission_cursor = (state.permission_cursor + 1) % 3;
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
+                state.permission_cycle(1);
                 return true;
             }
-            KeyCode::Enter => {
-                let decision = ["allow", "allow_always", "deny"][state.permission_cursor];
-                state.resolve_permission(decision, handle);
-                return true;
+            KeyCode::Enter => state.permission_confirm(handle),
+            KeyCode::Esc => state.permission_escape(handle),
+            // 保留旧快捷键兼容：y=本次允许, a=始终允许, n=拒绝
+            KeyCode::Char('y') if stage == Some(crate::store::PermissionStage::Permission) => {
+                state.permission_cursor = 0;
+                state.permission_confirm(handle);
             }
-            KeyCode::Char('y') => state.resolve_permission("allow", handle),
-            KeyCode::Char('a') => state.resolve_permission("allow_always", handle),
-            KeyCode::Char('n') => state.resolve_permission("deny", handle),
-            KeyCode::Esc => state.resolve_permission("deny", handle),
+            KeyCode::Char('a') if stage == Some(crate::store::PermissionStage::Permission) => {
+                state.permission_cursor = 1;
+                state.permission_confirm(handle);
+            }
+            KeyCode::Char('n') if stage == Some(crate::store::PermissionStage::Permission) => {
+                state.permission_cursor = 2;
+                state.permission_confirm(handle);
+            }
             _ => return false,
         }
         return true;

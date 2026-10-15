@@ -114,11 +114,26 @@ pub enum Role {
     Assistant,
 }
 
+/// 权限弹窗阶段（对齐 opencode：permission → always 确认 / reject 输入原因）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionStage {
+    /// 初始：选择 本次允许 / 始终允许 / 拒绝。
+    Permission,
+    /// 始终允许二次确认。
+    AlwaysConfirm,
+    /// 拒绝时输入原因（可选）。
+    Reject,
+}
+
 #[derive(Clone)]
 pub struct PermissionRequest {
     pub id: u64,
     pub tool: String,
     pub arguments: String,
+    /// 当前阶段。
+    pub stage: PermissionStage,
+    /// 拒绝原因（reject 阶段输入，可空）。
+    pub reject_message: String,
 }
 
 pub struct AppState {
@@ -163,7 +178,7 @@ pub struct AppState {
     pub draft: String,
 
     pub permission: Option<PermissionRequest>,
-    /// 权限弹窗当前高亮的选项（0=本次允许 / 1=始终允许 / 2=拒绝）。
+    /// 权限弹窗当前高亮的按钮索引（横向导航）。
     pub permission_cursor: usize,
     /// 对话框栈（栈顶吃键；M2-6 起 Select/Confirm/Help 均入栈）。
     pub dialogs: Vec<Dialog>,
@@ -1712,6 +1727,8 @@ impl AppState {
                         id: *id,
                         tool,
                         arguments,
+                        stage: crate::store::PermissionStage::Permission,
+                        reject_message: String::new(),
                     });
                     self.permission_cursor = 0;
                 }
@@ -1767,10 +1784,102 @@ impl AppState {
 
     pub fn resolve_permission(&mut self, decision: &str, handle: &RuntimeHandle) {
         if let Some(req) = self.permission.take() {
-            let value = serde_json::json!({ "decision": decision });
+            let mut value = serde_json::json!({ "decision": decision });
+            // 拒绝时带上用户输入的原因（如果有）。
+            if decision == "deny" && !req.reject_message.trim().is_empty() {
+                value["reason"] = serde_json::Value::String(req.reject_message.trim().to_string());
+            }
             handle.respond(req.id, value);
         }
         self.set_phase(Phase::Working);
+    }
+
+    /// 当前权限弹窗可选的按钮列表（根据阶段变化）。
+    pub fn permission_options(&self) -> &'static [&'static str] {
+        match self.permission.as_ref().map(|r| r.stage) {
+            Some(PermissionStage::Permission) => &["本次允许", "始终允许", "拒绝"],
+            Some(PermissionStage::AlwaysConfirm) => &["确认始终允许", "取消"],
+            Some(PermissionStage::Reject) => &["确认拒绝", "返回"],
+            None => &[],
+        }
+    }
+
+    /// 权限弹窗横向导航（步长 +1 右 / -1 左）。
+    pub fn permission_cycle(&mut self, delta: i8) {
+        let opts = self.permission_options();
+        if opts.is_empty() {
+            return;
+        }
+        let len = opts.len() as isize;
+        let next = (self.permission_cursor as isize + delta as isize).rem_euclid(len);
+        self.permission_cursor = next as usize;
+    }
+
+    /// 权限弹窗 Enter 确认：根据当前阶段分发。
+    pub fn permission_confirm(&mut self, handle: &RuntimeHandle) {
+        let Some(req) = self.permission.as_mut() else {
+            return;
+        };
+        match req.stage {
+            PermissionStage::Permission => match self.permission_cursor {
+                0 => self.resolve_permission("allow", handle),
+                1 => {
+                    // 进入"始终允许"二次确认。
+                    req.stage = PermissionStage::AlwaysConfirm;
+                    self.permission_cursor = 0;
+                }
+                2 => {
+                    // 进入"拒绝"输入原因阶段。
+                    req.stage = PermissionStage::Reject;
+                    req.reject_message.clear();
+                    self.permission_cursor = 0;
+                }
+                _ => {}
+            },
+            PermissionStage::AlwaysConfirm => match self.permission_cursor {
+                0 => self.resolve_permission("allow_always", handle),
+                1 => {
+                    // 返回到初始阶段，光标停在"始终允许"上。
+                    if let Some(req) = self.permission.as_mut() {
+                        req.stage = PermissionStage::Permission;
+                    }
+                    self.permission_cursor = 1;
+                }
+                _ => {}
+            },
+            PermissionStage::Reject => match self.permission_cursor {
+                0 => self.resolve_permission("deny", handle),
+                1 => {
+                    // 返回到初始阶段，光标停在"拒绝"上。
+                    if let Some(req) = self.permission.as_mut() {
+                        req.stage = PermissionStage::Permission;
+                    }
+                    self.permission_cursor = 2;
+                }
+                _ => {}
+            },
+        }
+    }
+
+    /// 权限弹窗 Esc：根据阶段返回上级或直接拒绝。
+    pub fn permission_escape(&mut self, handle: &RuntimeHandle) {
+        let Some(req) = self.permission.as_mut() else {
+            return;
+        };
+        match req.stage {
+            PermissionStage::Permission => {
+                // 直接拒绝（等价于选"拒绝"）。
+                self.resolve_permission("deny", handle);
+            }
+            PermissionStage::AlwaysConfirm => {
+                req.stage = PermissionStage::Permission;
+                self.permission_cursor = 1;
+            }
+            PermissionStage::Reject => {
+                req.stage = PermissionStage::Permission;
+                self.permission_cursor = 2;
+            }
+        }
     }
 
     pub fn scroll_up(&mut self, rows: u16) {
