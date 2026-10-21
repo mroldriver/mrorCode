@@ -11,7 +11,7 @@ mrorcode-config  (leaf, readable by anyone)
 ## Commands (all verified on this tree)
 
 ```bash
-cargo test --workspace                          # 282 tests, all green
+cargo test --workspace                          # 326 tests, all green
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 cargo build --release                           # -> target/release/mrorcode.exe

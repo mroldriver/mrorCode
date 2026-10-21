@@ -328,6 +328,163 @@ async fn cancel_terminates_running_turn() {
     assert!(matches!(terminal, AgentEvent::Cancelled));
 }
 
+/// 直到取消才返回的工具；取消时其 future 会被 agent 丢弃。
+struct BlockingTool;
+
+#[async_trait]
+impl Tool for BlockingTool {
+    fn name(&self) -> &str {
+        "block"
+    }
+    fn description(&self) -> &str {
+        "blocks until cancelled"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self, _arguments: &serde_json::Value) -> RiskLevel {
+        RiskLevel::Safe
+    }
+    async fn execute(&self, _arguments: &str, ctx: &ToolContext<'_>) -> ToolResult {
+        ctx.cancel.cancelled().await;
+        ToolResult::error("block", json!({"error": "cancelled"}).to_string())
+    }
+}
+
+/// 第一轮返回两个工具调用，并记录每次请求的消息快照（用于校验配对）。
+#[derive(Clone, Default)]
+struct TwoToolRoundProvider {
+    requests: Arc<tokio::sync::Mutex<Vec<Vec<mrorcode_kernel::Message>>>>,
+    round: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmProvider for TwoToolRoundProvider {
+    fn model_name(&self) -> &str {
+        "two-tool-round"
+    }
+
+    fn chat_stream<'a>(
+        &'a self,
+        messages: &'a [mrorcode_kernel::Message],
+        _tools: &'a [mrorcode_kernel::ToolDef],
+        _options: &'a ChatOptions,
+        _cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = ProviderResult<BoxStream<'a, StreamEvent>>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let requests = Arc::clone(&self.requests);
+        let round = Arc::clone(&self.round);
+        let snapshot = messages.to_vec();
+        Box::pin(async move {
+            requests.lock().await.push(snapshot);
+            let n = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let events = if n == 0 {
+                multi_tool_call_script(&[("c1", "block"), ("c2", "block")])
+            } else {
+                vec![StreamEvent::TextDelta("done".into())]
+            };
+            Ok(Box::pin(futures::stream::iter(events)) as BoxStream<'a, StreamEvent>)
+        })
+    }
+}
+
+/// 取消发生在多工具轮次中途：历史里不能留下悬空 tool_calls，后续请求必须合法。
+#[tokio::test]
+async fn cancel_mid_tool_round_leaves_valid_tool_pairing() {
+    let provider = TwoToolRoundProvider::default();
+    let requests = Arc::clone(&provider.requests);
+    let mut reg = ToolRegistry::new();
+    reg.insert(Arc::new(BlockingTool));
+
+    let mut handle = AgentBuilder::new()
+        .provider(Arc::new(provider))
+        .tools(reg)
+        .spawn();
+
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "go".into(),
+        })
+        .unwrap();
+
+    // 等到工具开始执行：此时带 tool_calls 的 assistant 消息已经落库。
+    loop {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.events.recv())
+            .await
+            .expect("event timeout")
+            .expect("channel closed");
+        if matches!(ev, AgentEvent::ToolStarted { .. }) {
+            break;
+        }
+    }
+
+    handle.commands.send(AgentCommand::Cancel).unwrap();
+    loop {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.events.recv())
+            .await
+            .expect("cancel timeout")
+            .expect("channel closed");
+        if matches!(ev, AgentEvent::Cancelled) {
+            break;
+        }
+    }
+
+    // 取消后再次提交：provider 会记录第二轮看到的历史，配对必须完整。
+    handle
+        .commands
+        .send(AgentCommand::Submit {
+            session_id: 1,
+            text: "continue".into(),
+        })
+        .unwrap();
+    loop {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.events.recv())
+            .await
+            .expect("second turn timeout")
+            .expect("channel closed");
+        if matches!(ev, AgentEvent::TurnComplete { .. }) {
+            break;
+        }
+    }
+    handle.commands.send(AgentCommand::Shutdown).unwrap();
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2, "两轮请求都应到达 provider");
+    let history = &requests[1];
+    let assistant = history
+        .iter()
+        .position(|m| {
+            m.role == mrorcode_kernel::message::Role::Assistant && m.tool_calls.len() == 2
+        })
+        .expect("assistant tool_calls 消息应保留");
+    let calls: Vec<&str> = history[assistant]
+        .tool_calls
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    let results: Vec<(&str, &str)> = history[assistant + 1..]
+        .iter()
+        .take_while(|m| m.role == mrorcode_kernel::message::Role::Tool)
+        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m.text.as_str())))
+        .collect();
+    assert_eq!(results.len(), 2, "每个 tool_call 都应有结果");
+    for (idx, id) in calls.iter().enumerate() {
+        assert_eq!(results[idx].0, *id);
+        assert!(
+            results[idx].1.contains("cancelled"),
+            "取消的 tool 结果应标记 cancelled：{}",
+            results[idx].1
+        );
+    }
+}
+
 /// 记录每次请求消息数与模型覆盖的 provider。
 type RecCalls = Arc<tokio::sync::Mutex<Vec<(usize, Option<String>)>>>;
 
@@ -538,7 +695,10 @@ async fn read_only_mode_blocks_risky_tools() {
         .tools(reg)
         .spawn();
 
-    handle.commands.send(AgentCommand::SetMode(PermissionMode::ReadOnly)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::SetMode(PermissionMode::ReadOnly))
+        .unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {
@@ -571,7 +731,10 @@ async fn read_only_mode_blocks_workspace_write_tools() {
         .tools(reg)
         .spawn();
 
-    handle.commands.send(AgentCommand::SetMode(PermissionMode::ReadOnly)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::SetMode(PermissionMode::ReadOnly))
+        .unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {
@@ -604,7 +767,10 @@ async fn read_only_mode_allows_safe_tools() {
         .tools(reg)
         .spawn();
 
-    handle.commands.send(AgentCommand::SetMode(PermissionMode::ReadOnly)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::SetMode(PermissionMode::ReadOnly))
+        .unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {
@@ -639,7 +805,10 @@ async fn workspace_mode_allows_workspace_write_without_approval() {
         .add_middleware(Arc::new(DenyAll)) // 若走审批/middleware 即被拒
         .spawn();
 
-    handle.commands.send(AgentCommand::SetMode(PermissionMode::Workspace)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::SetMode(PermissionMode::Workspace))
+        .unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {
@@ -674,7 +843,10 @@ async fn full_mode_skips_approval_middleware() {
         .add_middleware(Arc::new(DenyAll)) // 完全访问下应被跳过
         .spawn();
 
-    handle.commands.send(AgentCommand::SetMode(PermissionMode::Full)).unwrap();
+    handle
+        .commands
+        .send(AgentCommand::SetMode(PermissionMode::Full))
+        .unwrap();
     handle
         .commands
         .send(AgentCommand::Submit {

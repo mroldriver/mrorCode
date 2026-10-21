@@ -135,10 +135,12 @@ impl Conversation {
             .map(|m| m.text.as_str())
     }
 
-    /// 修复悬空配对：移除找不到对应 assistant tool_call 的孤儿 tool 消息。
+    /// 修复悬空配对：移除孤儿 tool 消息，并为「有 call 无结果」补合成结果。
     ///
-    /// 正常循环中调用与结果总是成对落库；该函数是防御性修复（resume/异常路径）。
+    /// 正常循环中调用与结果总是成对落库；该函数是防御性修复（取消/resume/异常路径）。
+    /// OpenAI/Anthropic 都要求每个 tool_call 紧跟着对应结果，否则下一次请求会 400。
     pub fn repair_pairing(&mut self) {
+        // 1) 移除找不到对应 assistant tool_call 的孤儿 tool 消息。
         let known_call_ids: std::collections::HashSet<String> = self
             .messages
             .iter()
@@ -150,6 +152,44 @@ impl Conversation {
                     .as_deref()
                     .is_some_and(|id| known_call_ids.contains(id))
         });
+
+        // 2) 为未执行的 call 补一条合成结果（取消/异常退出时可能出现）。
+        //    结果插在该 assistant 消息之后连续 tool 结果块的末尾，保持协议顺序。
+        let mut i = 0;
+        while i < self.messages.len() {
+            if self.messages[i].role != Role::Assistant || self.messages[i].tool_calls.is_empty() {
+                i += 1;
+                continue;
+            }
+            let call_ids: Vec<String> = self.messages[i]
+                .tool_calls
+                .iter()
+                .map(|c| c.id.clone())
+                .collect();
+            let mut end = i + 1;
+            let mut answered = std::collections::HashSet::new();
+            while end < self.messages.len() && self.messages[end].role == Role::Tool {
+                if let Some(id) = &self.messages[end].tool_call_id {
+                    answered.insert(id.clone());
+                }
+                end += 1;
+            }
+            let missing: Vec<Message> = call_ids
+                .iter()
+                .filter(|id| !answered.contains(*id))
+                .map(|id| {
+                    Message::tool_result(&ToolResult::error(
+                        id.clone(),
+                        serde_json::json!({"status": "cancelled"}).to_string(),
+                    ))
+                })
+                .collect();
+            let inserted = missing.len();
+            if inserted > 0 {
+                self.messages.splice(end..end, missing);
+            }
+            i = end + inserted;
+        }
     }
 
     /// 粗略 token 估算（约 4 字符 / token，含 tool 调用参数），不引入 tokenizer。
@@ -300,6 +340,52 @@ mod tests {
         }));
         convo.repair_pairing();
         assert_eq!(convo.messages.len(), 2);
+    }
+
+    #[test]
+    fn repair_synthesizes_missing_tool_results() {
+        let mut convo = Conversation::new();
+        convo.push(Message::user("hi"));
+        convo.push(Message::assistant_tool_calls(vec![
+            ToolCall::new("c1", "bash"),
+            ToolCall::new("c2", "bash"),
+        ]));
+        // 只有 c1 执行完成（取消发生在执行 c2 之前）
+        convo.push(Message::tool_result(&ToolResult {
+            call_id: "c1".into(),
+            content: "ok".into(),
+            is_error: false,
+        }));
+        convo.repair_pairing();
+
+        assert_eq!(convo.messages.len(), 4);
+        assert_eq!(convo.messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(convo.messages[3].role, Role::Tool);
+        assert_eq!(convo.messages[3].tool_call_id.as_deref(), Some("c2"));
+        assert!(convo.messages[3].is_error);
+        assert!(convo.messages[3].text.contains("cancelled"));
+
+        // 幂等：再次修复不改变消息数
+        let len = convo.messages.len();
+        convo.repair_pairing();
+        assert_eq!(convo.messages.len(), len);
+    }
+
+    #[test]
+    fn repair_synthesizes_all_results_when_tool_block_missing() {
+        let mut convo = Conversation::new();
+        convo.push(Message::user("hi"));
+        convo.push(Message::assistant_tool_calls(vec![ToolCall::new(
+            "c1", "bash",
+        )]));
+        // 取消发生在工具执行前：assistant 之后直接是下一条 user
+        convo.push(Message::user("next"));
+        convo.repair_pairing();
+
+        assert_eq!(convo.messages.len(), 4);
+        assert_eq!(convo.messages[2].role, Role::Tool);
+        assert_eq!(convo.messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(convo.messages[3].role, Role::User);
     }
 
     fn turn_with_tool(convo: &mut Conversation, user: &str, call: &str) {

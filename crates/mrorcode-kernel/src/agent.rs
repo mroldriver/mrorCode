@@ -289,6 +289,9 @@ async fn run_agent(
                         state.mode = mode;
                     }
                     Some(AgentCommand::LoadSession { session_id, conversation }) => {
+                        // 历史会话可能残留悬空 tool_calls（旧版本取消/异常退出），入库前先修复。
+                        let mut conversation = conversation;
+                        conversation.repair_pairing();
                         state.conversations.insert(session_id, conversation);
                     }
                     Some(AgentCommand::Rewind {
@@ -532,8 +535,9 @@ impl TurnCtx {
             }
 
             // ---- 顺序执行工具 ----
-            for call in &calls {
+            for (idx, call) in calls.iter().enumerate() {
                 if self.cancel.is_cancelled() {
+                    self.push_cancelled_results(&calls[idx..]);
                     self.emit(AgentEvent::Cancelled);
                     return;
                 }
@@ -648,6 +652,9 @@ impl TurnCtx {
                     };
                     match executed {
                         None => {
+                            // 当前 call 及后续 call 都没有结果，必须补齐后再退出，
+                            // 否则历史里留下悬空 tool_calls，下一次请求会被 provider 拒绝。
+                            self.push_cancelled_results(&calls[idx..]);
                             self.emit(AgentEvent::Cancelled);
                             return;
                         }
@@ -673,6 +680,16 @@ impl TurnCtx {
         self.emit(AgentEvent::TurnComplete {
             stop_reason: StopReason::MaxRounds,
         });
+    }
+
+    /// 取消时为未执行的 call 补合成 tool 结果并通知 UI（工具卡收尾为 cancelled）。
+    fn push_cancelled_results(&mut self, calls: &[ToolCall]) {
+        for call in calls {
+            let result =
+                ToolResult::error(call.id.clone(), json!({"status": "cancelled"}).to_string());
+            self.emit_tool_result(&call.name, &result);
+            self.conversation.push(Message::tool_result(&result));
+        }
     }
 
     fn emit_tool_result(&self, name: &str, result: &ToolResult) {

@@ -25,11 +25,11 @@ fn present(tool: &str, args: &serde_json::Value) -> (String, String) {
             }
         }
         "bash" | "shell" => {
-            let cmd = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            ("#".into(), format!("Shell: {}", crate::render::truncate_end(cmd, 60)))
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            (
+                "#".into(),
+                format!("Shell: {}", crate::render::truncate_end(cmd, 60)),
+            )
         }
         "read" | "glob" | "grep" => {
             let pattern = args
@@ -40,7 +40,10 @@ fn present(tool: &str, args: &serde_json::Value) -> (String, String) {
             ("◈".into(), format!("{} {}", tool, pattern))
         }
         "task" | "subagent" => {
-            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("general");
+            let agent = args
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("general");
             ("◉".into(), format!("子代理 {}", agent))
         }
         _ => ("⚙".into(), format!("调用工具 {}", tool)),
@@ -58,11 +61,20 @@ pub fn render(state: &AppState, area: Rect, buf: &mut Buffer, theme: &Theme) {
     let width = 64u16.min(area.width.saturating_sub(4)).max(24);
     // 基础行：标题(1) + 空行(1) + 工具行(1) + 详情(1) + 空行(1) + 按钮行(1) + 提示行(1) = 7
     // reject 阶段多一行输入框：+2
-    let height = if stage == PermissionStage::Reject { 11 } else { 9 };
+    let height = if stage == PermissionStage::Reject {
+        11
+    } else {
+        9
+    };
     let height = height.min(area.height.saturating_sub(2)).max(7);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 3;
-    let card = Rect { x, y, width, height };
+    let card = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 
     Block::default()
         .borders(Borders::ALL)

@@ -1891,7 +1891,7 @@ mod tests {
         term.draw(|f| draw(f, &mut state)).unwrap();
         // 真实绑定（含 leader）出现在 help 中
         assert!(buffer_contains(&term, "ctrl+p"));
-        assert!(buffer_contains(&term, "leader t"));
+        assert!(buffer_contains(&term, "ctrl+shift+t"));
         assert!(buffer_contains(&term, "leader b"));
 
         // q 关闭

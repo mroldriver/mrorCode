@@ -8,7 +8,8 @@
 | [project-plan-atomcode.md](project-plan-atomcode.md) | 产品总体设计：定位、TUI 技术选型、6-crate 架构、功能对标清单、技术栈 | 现行（随实现维护） |
 | [tui-layout-spec.md](tui-layout-spec.md) | TUI 视觉布局规范（对齐 opencode 的外壳/气泡/输入框/光标/侧栏/权限弹窗/键位/主题） | 现行（改布局前必读） |
 | [roadmap.md](roadmap.md) | M1–M4 实施计划与完成报告（M1–M4 存档），M5 硬化发布（a–e 计划 + f 对标实施记录） | 混合（历史存档 + 进行中计划） |
-| [todos/](todos/) | 单项对标/发布待办清单（如 [TUI 对 opencode 差异](todos/20260928-tui-parity-opencode-对标差异.md)） | 现行 |
+| [crossrepo-review-20261019.md](crossrepo-review-20261019.md) | 三库战略对标（mrorCode vs atomcode vs opencode）：架构方向、安全短板、能力补齐清单、M6 建议 | 现行（战略评审） |
+| [todos/](todos/) | 单项对标/发布待办清单（如 [TUI 对 opencode 差异](todos/20260928-tui-parity-opencode-对标差异.md)、[2026-10-19 代码审查发现](todos/20261019-code-review-findings.md)） | 现行 |
 
 ## 维护约定
 
