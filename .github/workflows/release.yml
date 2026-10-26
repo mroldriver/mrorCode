@@ -1,0 +1,112 @@
+name: release
+
+# 打 v* 标签即构建并发布；也可手动触发试跑（推荐第一次先用 workflow_dispatch 验证）。
+# 产物挂 GitHub Release：单文件 <= 2 GiB，public 仓库不占额度。
+#
+# 注意：.cargo/config.toml 被 gitignore（内含本地 dlltool 绝对路径），CI 上不存在，
+# 因此这里不做任何 dlltool 重定向，直接用 windows-latest 自带的 gnu 链接器。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v0.5.63），必须已存在'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具链信息
+        shell: pwsh
+        run: |
+          # rust-toolchain.toml 钉死 stable-x86_64-pc-windows-gnu，rustup 会自动安装
+          rustup show
+          cargo --version
+          rustc -vV
+          Write-Host "--- 诊断：dlltool 是否可见（不可见不影响，gnu target 自带链接器）"
+          Get-Command dlltool -ErrorAction SilentlyContinue | Format-List
+
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-gnu-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gnu-
+
+      - name: 测试
+        shell: pwsh
+        run: cargo test --workspace --no-fail-fast
+
+      - name: 构建 (release)
+        shell: pwsh
+        run: cargo build --release --locked -p mrorcode-cli
+
+      - name: 打包
+        id: pack
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event.inputs.tag }}') { '${{ github.event.inputs.tag }}' } else { '${{ github.ref_name }}' }
+          $ver = $tag -replace '^v', ''
+          $exe = 'target/release/mrorcode.exe'
+          if (-not (Test-Path $exe)) { throw "构建产物缺失: $exe" }
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $name = "mrorcode_${ver}_x86_64-pc-windows-gnu"
+          Compress-Archive -Path @($exe, 'README.md', 'LICENSE') `
+                           -DestinationPath "out/$name.zip" -CompressionLevel Optimal -Force
+          $hash = (Get-FileHash "out/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content -Encoding ascii "out/$name.zip.sha256"
+          Get-ChildItem out | Format-Table Name, Length
+          "asset=out/$name.zip" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 汇总校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          cat *.sha256 | sort -k2 > sha256sums.txt
+          rm -f *.sha256
+          cat sha256sums.txt
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "mrorCode $TAG" \
+              --generate-notes
+          fi
