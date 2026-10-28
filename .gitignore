@@ -1,6 +1,8 @@
 /target
 /.tools
 /.cargo/config.toml
+# AtomCode 本地记忆/会话状态（不入库）
+/.atomcode
 **/*.rs.bk
 *.pdb
 # 本地环境变量

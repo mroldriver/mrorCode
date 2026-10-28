@@ -1,21 +1,23 @@
 # AGENTS.md
 
 `mrorcode` — a fast terminal AI coding agent (Rust workspace, binary `mrorcode`).
-Six crates in `crates/`, layered one-way only:
+Five crates in `crates/`, layered one-way only:
 
 ```
-mrorcode-cli -> mrorcode-tui -> mrorcode-agent -> mrorcode-capabilities -> mrorcode-kernel
+mrorcode-cli -> mrorcode-agent -> mrorcode-capabilities -> mrorcode-kernel
 mrorcode-config  (leaf, readable by anyone)
 ```
+
+0.6.0 起移除了原 `mrorcode-tui`（ratatui 全屏界面），默认改为**裸 ANSI REPL**
+（`crates/mrorcode-cli/src/repl.rs`：rustyline 行编辑 + 流式文本输出 + stdin 审批）。
 
 ## Commands (all verified on this tree)
 
 ```bash
-cargo test --workspace                          # 326 tests, all green
+cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 cargo build --release                           # -> target/release/mrorcode.exe
-cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = release + line tables
 ```
 
 - Install to user PATH (`~/.cargo/bin`, no admin): `cargo build --release` then
@@ -29,9 +31,9 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
 
 ## Architecture rules
 
-- The kernel runtime is the sole owner of agent/conversation state. The TUI (`tui/src/store.rs`)
-  only projects `AgentEvent`s and emits commands; `cli/headless.rs` also goes through that runtime.
-  Never build a second agent state machine in a driver.
+- The kernel runtime is the sole owner of agent/conversation state. The REPL
+  (`cli/src/repl.rs`) and headless (`cli/src/headless.rs`) only project `AgentEvent`s and emit
+  commands; never build a second agent state machine in a driver.
 - Provider SSE is hand-decoded in `capabilities/src/provider/sse.rs` (byte-stateful `feed()`);
   there is deliberately no `eventsource` crate. Test it with recorded bytes, not live HTTP.
 
@@ -44,8 +46,6 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   (e.g. `str::floor_char_boundary`) — clippy is the gate that catches this.
 - **TLS is native-tls on purpose**: this box has no C compiler, so ring/rustls (and mimalloc) would break the build.
 - **Release profile**: `panic = "abort"` enabled (M5-c, 7.9→7.0 MB); mimalloc rejected (no gcc, same constraint as ring/rustls).
-- **Themes**: `crates/mrorcode-tui/src/themes/*.json` are embedded by `build.rs` at compile time —
-  adding one needs only a rebuild (vendored from opencode, MIT: `crates/mrorcode-tui/licenses/`).
 - **Testkit**: `mrorcode-kernel`'s `test-support` feature exposes `ScriptedProvider`/`EchoTool`
   plus the `stream_signature`/`assert_stream_sequence`/`assert_event_sequence` conformance
   asserters; the crates' dev-dependencies already enable it.
@@ -54,9 +54,8 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
   last in `--json` mode. `error` is a diagnostic, not terminal — only `turn.completed` is. The
   golden baseline is `crates/mrorcode-cli/tests/golden/headless-json.txt`; refresh it deliberately
   with `UPDATE_GOLDEN=1 cargo test -p mrorcode-cli --test headless_json` and say why in the commit.
-- **Performance is a release gate, not polish**: no per-frame full markdown reparse, and no cache
-  without a benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
-  Keep `benches/render.rs` budgets (< 16 ms/frame) from regressing.
+- **Performance is a release gate, not polish**: no per-frame reparse, and no cache without a
+  benchmark proving a win (a unicode-width cache measured ~10× *slower* and was deleted).
 - Comments and design docs are Chinese — preserve existing Chinese comments and match that tone.
 - Docs: product design is `docs/project-plan-atomcode.md`; `docs/roadmap.md` holds the archived
   M1–M4 plans plus the completed M4 plan (M5 is direction-only); index is `docs/README.md`.
@@ -65,12 +64,12 @@ cargo bench -p mrorcode-tui --bench render      # criterion; `bench` profile = r
 ## Versioning
 
 - Single source of truth: `[workspace.package] version` in the **root `Cargo.toml`** (line 7).
-  All six crates declare `version.workspace = true` — never add a per-crate `version` field, and
+  All five crates declare `version.workspace = true` — never add a per-crate `version` field, and
   don't confuse it with `rust-version = "1.88"` (the MSRV, not the product version).
 - Everything else derives from that one line: `mrorcode --version` (clap's `version` attr in
   `crates/mrorcode-cli/src/main.rs`) and the provider User-Agent (`env!("CARGO_PKG_VERSION")` in
   `crates/mrorcode-capabilities/src/provider/openai_compat.rs`). No hardcoded version strings exist
-  in the source — `Cargo.lock`'s six `mrorcode-*` entries re-sync on the next cargo command; never
+  in the source — `Cargo.lock`'s five `mrorcode-*` entries re-sync on the next cargo command; never
   hand-edit them.
 - **Project rule: bump the version in every change that touches code.** Edit that one line, then run
   `cargo check` so `Cargo.lock` follows (docs-only edits don't need a bump).

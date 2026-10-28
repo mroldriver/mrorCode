@@ -6,13 +6,13 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use mrorcode_agent::AssembleOptions;
-use mrorcode_cli::headless;
+use mrorcode_cli::{headless, repl};
 use mrorcode_config::Config;
 
 #[derive(Parser, Debug)]
 #[command(name = "mrorcode", version, about = "A fast terminal AI coding agent")]
 struct Cli {
-    /// 子命令；缺省进入 TUI（M1 暂未实现）。
+    /// 子命令；缺省进入裸 ANSI REPL。
     #[command(subcommand)]
     command: Option<Commands>,
 
@@ -37,10 +37,6 @@ struct CommonArgs {
     /// 跳过所有工具审批（仅限可信的自动化场景）。
     #[arg(long = "dangerously-skip-permissions", global = true)]
     skip_permissions: bool,
-
-    /// 恢复一个已持久化的会话 id（TUI 与 run 均可用）。
-    #[arg(long = "resume", global = true)]
-    resume: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -139,7 +135,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 skip_permissions: cli.common.skip_permissions,
                 compaction: compaction_policy(&loaded.config),
             };
-            let assembly = mrorcode_agent::assemble(
+            let mut assembly = mrorcode_agent::assemble(
                 &loaded.config.resolve().map_err(|e| {
                     eprintln!("{e}");
                     anyhow::anyhow!("provider not configured")
@@ -153,7 +149,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             for w in &assembly.warnings {
                 eprintln!("mcp warning: {w}");
             }
-            mrorcode_tui::run(assembly, cli.common.resume, loaded.config, options).await?;
+            repl::run_repl(&mut assembly).await?;
             std::process::exit(0);
         }
     }
