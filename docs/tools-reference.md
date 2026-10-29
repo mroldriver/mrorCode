@@ -9,9 +9,9 @@
 
 | 工具 | 风险等级 | 简介 |
 |---|---|---|
-| [read_file](#read_file) | Safe | 读取文件，支持分页 |
-| [write_file](#write_file) | WorkspaceWrite | 整文件写入，产 diff |
-| [edit_file](#edit_file) | WorkspaceWrite | 精确串替换，产 diff |
+| [read](#read) | Safe | 读取文件，支持分页 |
+| [write](#write) | WorkspaceWrite | 整文件写入，产 diff |
+| [edit](#edit) | WorkspaceWrite | 精确串替换，产 diff |
 | [bash](#bash) | Risky* | 执行 shell 命令 |
 | [glob](#glob) | Safe | 按模式列文件 |
 | [grep](#grep) | Safe | 内容正则搜索 |
@@ -33,7 +33,7 @@
 - 拒绝符号链接指向工作区外
 - Windows 额外拒绝 UNC / verbatim 前缀（`\\server\share`、`\\?\C:\...`）
 
-违规返回结构化错误，模型可据此自纠。
+违规返回纯文本错误（`路径: 原因`），模型可据此自纠。
 
 ### 结果截断
 
@@ -47,13 +47,35 @@
 
 截断是 UTF-8 安全的。设计动机：工具输出往往开头有结构信息、末尾有结论，中间最可能冗余。
 
+### 通用参数 `intent`
+
+每个工具的实际 schema 都由 kernel 的 `ToolRegistry::defs()` 自动注入一个**可选**参数 `intent`
+（`crates/mrorcode-kernel/src/tool.rs` 的 `INTENT_PARAM`）：
+
+```json
+{ "intent": { "type": "string", "description": "一句话说明为什么调用这个工具（用用户的语言）" } }
+```
+
+- **不进 `required`**：模型漏填不算错；工具自己声明了同名参数时保留工具的定义（MCP 可能撞名）。
+- **用途**：REPL 把它当工具卡首行（`● 跑一遍工作区测试`）；有 intent 时结果行不再重复参数，
+  没有 intent 时才回退成 `● 执行命令(git log -5 --stat)` / `└ ✓ 执行命令(...) → 12 行`。
+- **实现**：纯调用元数据，工具实现不需要读取它；解析在 CLI 侧（`repl.rs` 的 `tool_intent`）。
+
 ### 错误返回
 
-工具永不 panic。所有错误以 `is_error: true` 的 `ToolResult` 返回，错误文本回灌模型，模型可据此重试或调整策略。
+工具永不 panic。所有错误以 `is_error: true` 的 `ToolResult` 返回，content 是**纯文本**
+（不包 JSON）：
+
+- 路径相关错误带位置前缀：`src/main.rs: 文件不存在`
+- `bash` 执行失败时首行是 `[shell: bash]` 或 `[shell: cmd.exe]`，用于区分「命令写错」与
+  「shell 语义不符」（Windows 上会自动挑 Git Bash，见 [bash](#bash)）
+- MCP 工具直接返回 server 的错误文本
+
+模型据此重试或调整策略；headless 模式下错误通过 `tool.result` 事件（`is_error: true`）传递。
 
 ---
 
-## read_file
+## read
 
 **风险等级**：Safe（纯只读）
 
@@ -109,7 +131,7 @@ path/to/file.rs (42 lines total)
 
 ---
 
-## write_file
+## write
 
 **风险等级**：WorkspaceWrite（工作区内写）
 
@@ -157,11 +179,11 @@ diff --new file...
 ...
 ```
 
-失败时：`is_error: true` + 结构化错误原因（路径越界、需先读取、父目录不存在等）。
+失败时：`is_error: true` + 纯文本原因（`路径: 原因`，如路径越界、需先读取、父目录不存在）。
 
 ---
 
-## edit_file
+## edit
 
 **风险等级**：WorkspaceWrite（工作区内写）
 
@@ -196,16 +218,16 @@ diff --new file...
 
 ### 行为
 
-- 必须先读过该文件（read-before-write 校验，同 write_file）
+- 必须先读过该文件（read-before-write 校验，同 write）
 - `replace_all = false`（默认）：
-  - `old` 出现 0 次 → 结构化错误：「not found，上下文是什么」
-  - `old` 出现 > 1 次 → 结构化错误：「ambiguous，出现了 N 次，请扩大匹配范围」
+  - `old` 出现 0 次 → 纯文本错误：「`old` not found in file」（带路径前缀）
+  - `old` 出现 > 1 次 → 纯文本错误：「`old` is ambiguous: found N matches; add more context or set replace_all」
   - 恰好 1 次 → 替换成功，返回 diff
 - `replace_all = true`：替换所有出现次数，返回 diff
 
 ### 返回格式
 
-同 write_file：成功返回 diff，失败返回结构化错误。
+同 write：成功返回 diff，失败返回纯文本错误（`路径: 原因`）。
 
 ---
 
@@ -236,7 +258,9 @@ diff --new file...
 
 ### 行为
 
-- **Shell**：Windows 用 `cmd /C`，Unix 用 `sh -c`，`$SHELL` 优先
+- **Shell**：Unix 用 `$SHELL -c`（缺省 `/bin/sh`）；Windows 依次尝试 `MRORCODE_SHELL`
+  覆盖、`PATH` 上的 `bash.exe`（跳过 `WindowsApps` 的 WSL 别名）、Git for Windows 默认安装
+  路径，都找不到才退回 `cmd.exe /C`。实际使用的 shell 只在执行失败时以 `[shell: ...]` 回显
 - **工作目录**：runtime 的 `working_dir`
 - **超时**：默认 120 秒，最大 600 秒，超时进程被杀，返回错误
 - **编码**：用 `encoding_rs` 容错解码输出
@@ -359,7 +383,7 @@ src/agent.rs:89:     select! {
 
 **风险等级**：Risky（消耗 token / 时间，需审批）
 
-委派一个只读研究子任务给子 agent。子 agent 只能使用只读工具（`read_file` / `glob` / `grep`），绝不编辑或执行命令。
+委派一个只读研究子任务给子 agent。子 agent 只能使用只读工具（`read` / `glob` / `grep`），绝不编辑或执行命令。
 
 ### 参数
 
