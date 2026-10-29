@@ -280,8 +280,8 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
 struct ReplRender {
     /// 上一次输出之后光标是否已经在行首（初始为 true：屏幕上是干净的一行）。
     at_line_start: bool,
-    /// 工具调用 id → 工具卡文本（`读取文件(x.rs)`），供 `ToolResult` 复用同一行前缀。
-    pending: HashMap<String, String>,
+    /// 工具调用 id → 工具卡备忘（结果行据此去重参数），供 `ToolResult` 复用同一行前缀。
+    pending: HashMap<String, PendingTool>,
 }
 
 impl ReplRender {
@@ -356,11 +356,20 @@ fn handle_event(
             arguments,
         } => {
             // 首行优先用模型自述的 intent（「为什么调用」）；没给就从参数反推「工具名(详情)」。
-            let header = tool_intent(&arguments).unwrap_or_else(|| tool_card(&name, &arguments));
-            let card = tool_card(&name, &arguments);
+            let intent = tool_intent(&arguments);
+            let header = intent
+                .clone()
+                .unwrap_or_else(|| tool_card(&name, &arguments));
             // 模型正文常停在句子中间，工具卡必须自己另起一行。
             render.line(out, &format!("{} {}", cyan("●"), bold(&header)));
-            render.pending.insert(id, card);
+            // 记下「首行已经表达了参数」这件事：结果行据此决定要不要再重复一遍参数。
+            render.pending.insert(
+                id,
+                PendingTool {
+                    card: tool_card(&name, &arguments),
+                    intent_shown: intent.is_some(),
+                },
+            );
         }
         AgentEvent::ToolResult {
             id,
@@ -369,10 +378,10 @@ fn handle_event(
             is_error,
         } => {
             // 结果行复用开始时的工具卡文本；理论上 id 一定在表里，取不到就退回标签。
-            let card = render
-                .pending
-                .remove(&id)
-                .unwrap_or_else(|| tool_card(&name, "{}"));
+            let pending = render.pending.remove(&id).unwrap_or(PendingTool {
+                card: tool_card(&name, "{}"),
+                intent_shown: false,
+            });
             let trimmed = content.trim();
             let mark = if is_error { red("✗") } else { green("✓") };
             let suffix = if is_error {
@@ -381,7 +390,10 @@ fn handle_event(
                 let n = trimmed.lines().filter(|l| !l.trim().is_empty()).count();
                 dim(&format!("→ {} 行", n.max(1)))
             };
-            render.line(out, &format!("{} {mark} {card} {suffix}", dim("└")));
+            // 首行已经是 intent 时，参数只出现一次（issue #6）；没有 intent 时必须保留，
+            // 否则参数彻底不可见——此时首行就是参数。
+            let detail = result_detail(&pending);
+            render.line(out, &format!("{} {mark}{detail} {suffix}", dim("└")));
             // 成功与失败都只保留一行：成功显示行数，失败只显示「→ 失败」，不展开正文。
             // 结果行之后留一行空白：下面的正文/下一张工具卡不贴着结果。
             render.blank(out);
@@ -625,6 +637,26 @@ fn tool_card(name: &str, arguments: &str) -> String {
     }
 }
 
+/// 工具调用「已开始、未结束」期间的备忘。
+struct PendingTool {
+    /// 工具卡文本（`读取文件(x.rs)`）；首行没有 intent 时，结果行要靠它显示参数。
+    card: String,
+    /// 首行是否已经是模型给的 intent——是的话参数只需出现一次。
+    intent_shown: bool,
+}
+
+/// 结果行里的参数部分：首行已显示 intent 时留空（去重），否则回退到工具卡。
+///
+/// 去重只在「首行已是意图」时成立：没有 intent 时首行就是参数，结果行再不显示，
+/// 参数就从屏幕上彻底消失了。
+fn result_detail(pending: &PendingTool) -> String {
+    if pending.intent_shown {
+        String::new()
+    } else {
+        format!(" {}", pending.card)
+    }
+}
+
 /// 模型自述的调用意图（工具参数里的 `intent`，由 kernel 的 `defs()` 统一注入）。
 ///
 /// 空白串按缺失处理：宁可回退到「工具名(参数)」，也不要在屏幕上留一个空的 `●`。
@@ -751,6 +783,26 @@ mod tests {
         assert_eq!(header, "执行命令(cargo test)");
         assert_eq!(tool_intent(r#"{"command":"ls","intent":"   "}"#), None);
         assert_eq!(tool_intent("not json"), None);
+    }
+
+    #[test]
+    fn result_line_skips_arguments_only_when_intent_was_shown() {
+        // 首行是 intent：结果行只留状态与行数，参数不重复（issue #6）。
+        let with_intent = PendingTool {
+            card: "执行命令(git log -5 --stat)".to_string(),
+            intent_shown: true,
+        };
+        assert_eq!(result_detail(&with_intent), "");
+
+        // 没有 intent：首行就是参数，结果行必须保留，否则参数从屏幕上消失。
+        let without_intent = PendingTool {
+            card: "执行命令(git log -5 --stat)".to_string(),
+            intent_shown: false,
+        };
+        assert_eq!(
+            result_detail(&without_intent),
+            " 执行命令(git log -5 --stat)"
+        );
     }
 
     /// 跑一段事件序列，返回写到「屏幕」上的纯文本（不经过配色函数，断言稳定）。
