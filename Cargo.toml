@@ -26,6 +26,16 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
+# 本地迭代速度优先：dev 只保留行号表（backtrace 仍有文件:行号），
+# 依赖一律不带调试信息。默认 dev 的 debug=2 是全量 DWARF，是 target/ 体积
+# 和增量编译时间的主要来源；这两项能把它砍掉一大半。
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.dependencies]
 # 内部 crate
 mrorcode-kernel = { path = "crates/mrorcode-kernel" }
