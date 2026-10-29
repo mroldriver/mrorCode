@@ -1,6 +1,8 @@
 # REPL 输出排版改进（2026-10-28）
 
 > **Issue**：[#11 REPL 输出排版改进：空行间距 / 用户输入颜色 / 工具卡间距 / 长 Markdown 折叠](https://gitcode.com/mroldriver/mrorCode/issues/11)
+> **状态**：已实现（0.6.10）——问题 1（横幅空行）、问题 3（正文↔工具卡间距）、
+> 问题 4-A（长回复折叠 + `/full`）已落地；问题 2-C（用户输入彩色重打）按 issue 建议留作后续迭代。
 > 来源：`D:\_mroldriver\mrorCode\.local\logs\mrorcode.log`（v0.6.5 bare ANSI REPL 实测）
 > 范围：`crates/mrorcode-cli/src/repl.rs`（bare ANSI REPL，非 TUI）
 > 性质：纯输出排版与可读性改进，不涉及内核/会话逻辑。
