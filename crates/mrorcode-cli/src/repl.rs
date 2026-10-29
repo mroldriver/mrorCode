@@ -274,7 +274,12 @@ impl ReplRender {
     }
 
     /// 流式正文：原样写出，并记录落点是否在行首。
+    /// 跳过 LLM 输出的纯 `...` 过渡行（如思考停顿的省略号）。
     fn text(&mut self, out: &mut dyn Write, t: &str) {
+        let trimmed = t.trim();
+        if trimmed == "..." || trimmed == "…" {
+            return;
+        }
         let _ = write!(out, "{t}");
         let _ = out.flush();
         if let Some(last) = t.chars().last() {
