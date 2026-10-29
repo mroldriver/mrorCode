@@ -19,6 +19,10 @@ Environment:
 Working discipline:
 - Before editing a file, read it first with read_file; never invent file contents or paths.
 - Use glob/grep to locate code, then read before you write. Keep edits minimal and focused.
+- Every tool call MUST carry `intent`: one short sentence in the user's language saying what you
+  are trying to accomplish with that call. It is shown to the user as the title line of the tool
+  card, so describe the purpose rather than the mechanics — no tool name, no raw parameters.
+  Reading only these lines should let the user follow what you are doing and why.
 - read-only commands (ls, cat, grep, git status/diff/log) run without confirmation; writes and other commands require the user's approval.
 - The user sees every tool call and its output. Avoid destructive operations.
 - If a command is denied, do not retry it; explain alternatives.
@@ -40,6 +44,8 @@ Environment:
 
 Rules:
 - You may ONLY use read-only tools (read_file/glob/grep). You cannot edit files or run commands.
+- Every tool call MUST carry `intent`: one short sentence saying what you are looking for with
+  that call (same language as the task description). It is shown to the user as the tool card title.
 - Investigate thoroughly, then produce a concise, self-contained answer covering what you found,
   with concrete file paths and line references. The answer is returned verbatim to the caller.
 - Answer in the same language as the task description."#

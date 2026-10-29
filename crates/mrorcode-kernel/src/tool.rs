@@ -119,7 +119,14 @@ impl ToolRegistry {
     }
 
     pub fn defs(&self) -> Vec<ToolDef> {
-        self.tools.values().map(|t| t.def()).collect()
+        self.tools
+            .values()
+            .map(|t| {
+                let mut def = t.def();
+                def.parameters = with_intent(def.parameters);
+                def
+            })
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -128,5 +135,112 @@ impl ToolRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+}
+
+/// 每个工具调用都自带的意图参数名。
+///
+/// 模型用一句话说明「为什么要调这个工具」，这一行会原样显示成工具卡的首行
+/// （参见 `crates/mrorcode-cli/src/repl.rs`）。放在 `defs()` 这个唯一出口注入，
+/// 内置工具、MCP 工具、将来新增的工具自动享有，各工具无需自己声明。
+pub const INTENT_PARAM: &str = "intent";
+
+/// `intent` 参数的说明；措辞直接决定模型写不写、写得有没有用。
+const INTENT_DESCRIPTION: &str = "One short sentence in the user's language saying what you are \
+trying to accomplish with this call. It is shown to the person as the title line of the tool \
+card, so state the goal, not the mechanics: no tool name, no raw parameters.";
+
+/// 把 `intent` 参数注入到工具 schema 里（可选参数，不进入 `required`）。
+///
+/// - 工具自己声明过 `intent` 就保留原样（MCP server 可能有同名参数）；
+/// - schema 不是带 `properties` 的对象时原样返回（别为了显示去破坏别人的契约）。
+fn with_intent(mut parameters: Value) -> Value {
+    let Some(obj) = parameters.as_object_mut() else {
+        return parameters;
+    };
+    let props = obj
+        .entry("properties")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(props) = props.as_object_mut() {
+        props.entry(INTENT_PARAM).or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": INTENT_DESCRIPTION,
+            })
+        });
+    }
+    parameters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 只用来验 schema 注入的最小工具；execute 不会被测试调用。
+    struct FakeTool {
+        params: Value,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for FakeTool {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn description(&self) -> &str {
+            "fake tool"
+        }
+        fn parameters_schema(&self) -> Value {
+            self.params.clone()
+        }
+        async fn execute(&self, _arguments: &str, _ctx: &ToolContext<'_>) -> ToolResult {
+            ToolResult::ok("fake", "ok")
+        }
+    }
+
+    fn defs_of(params: Value) -> Value {
+        let mut reg = ToolRegistry::new();
+        reg.insert(Arc::new(FakeTool { params }));
+        reg.defs()[0].parameters.clone()
+    }
+
+    #[test]
+    fn defs_inject_intent_and_keep_existing_params() {
+        let params = defs_of(serde_json::json!({
+            "type": "object",
+            "properties": { "command": { "type": "string" } },
+            "required": ["command"]
+        }));
+        // 原有参数与 required 原样保留。
+        assert_eq!(params["properties"]["command"]["type"], "string");
+        assert_eq!(params["required"], serde_json::json!(["command"]));
+        // intent 是可选参数：进 properties，不进 required（模型漏给也不算错）。
+        assert_eq!(params["properties"][INTENT_PARAM]["type"], "string");
+        assert!(!params["properties"][INTENT_PARAM]["description"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn defs_do_not_clobber_tool_owned_intent() {
+        // MCP server 自带同名参数时不覆盖，避免破坏别人的协议契约。
+        let params = defs_of(serde_json::json!({
+            "type": "object",
+            "properties": { "intent": { "type": "string", "description": "mine" } }
+        }));
+        assert_eq!(params["properties"]["intent"]["description"], "mine");
+    }
+
+    #[test]
+    fn defs_create_properties_when_schema_has_none() {
+        let params = defs_of(serde_json::json!({ "type": "object" }));
+        assert_eq!(params["properties"][INTENT_PARAM]["type"], "string");
+    }
+
+    #[test]
+    fn defs_leave_non_object_schema_alone() {
+        // 非对象 schema（异常但合法）原样返回，不为显示去打碎它。
+        let params = defs_of(serde_json::json!("weird-schema"));
+        assert_eq!(params, serde_json::json!("weird-schema"));
     }
 }

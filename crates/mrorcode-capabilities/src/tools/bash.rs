@@ -99,31 +99,20 @@ impl Tool for BashTool {
             },
         };
 
+        // stdout 与 stderr 合并为纯文本；成功/失败都不再包装 [stderr]/[exit code N]。
+        // 退出码通过 ToolResult.is_error 传递，文本只留可诊断的输出本身。
         let mut content = decode_bytes(&output.stdout);
         let stderr = decode_bytes(&output.stderr);
         if !stderr.trim().is_empty() {
-            if !content.is_empty() {
+            if !content.trim().is_empty() {
                 content.push('\n');
             }
-            content.push_str("[stderr]\n");
             content.push_str(&stderr);
-        }
-        if content.trim().is_empty() {
-            content = format!(
-                "[exited {} with no output]",
-                output.status.code().unwrap_or(-1)
-            );
         }
         if output.status.success() {
             ToolResult::ok("bash", content)
         } else {
-            ToolResult::error(
-                "bash",
-                format!(
-                    "{content}\n[exit code {}]",
-                    output.status.code().unwrap_or(-1)
-                ),
-            )
+            ToolResult::error("bash", content)
         }
     }
 }

@@ -55,5 +55,6 @@ async fn failing_command_returns_error_result() {
         .execute(&serde_json::json!({"command": command}).to_string(), &ctx)
         .await;
     assert!(result.is_error);
-    assert!(result.content.contains("exit code 3"));
+    // 失败时 content 只保留纯输出（此处为空），退出码不再写入文本。
+    assert!(result.content.trim().is_empty());
 }
