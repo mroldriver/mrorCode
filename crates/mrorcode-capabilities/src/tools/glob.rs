@@ -71,7 +71,7 @@ impl Tool for GlobTool {
         match result {
             Ok(Ok(mut files)) => {
                 if files.is_empty() {
-                    return ToolResult::ok("glob", "[no files matched]");
+                    return ToolResult::ok("glob", "no files matched");
                 }
                 let total = files.len();
                 files.truncate(MAX_RESULTS);

@@ -59,6 +59,13 @@
 - **不进 `required`**：模型漏填不算错；工具自己声明了同名参数时保留工具的定义（MCP 可能撞名）。
 - **用途**：REPL 把它当工具卡首行（`● 跑一遍工作区测试`）；有 intent 时结果行不再重复参数，
   没有 intent 时才回退成 `● 执行命令(git log -5 --stat)` / `└ ✓ 执行命令(...) → 12 行`。
+- **模型为什么一定会写**：系统提示词里是硬要求，不是建议——
+  `crates/mrorcode-agent/src/persona.rs:22`（通用段）与 `:47`（搜索类工具段）都写着
+  "Every tool call MUST carry `intent`"。改措辞等于改模型行为，动之前先看这两行的上下文。
+- **headless 透传**：`tool.started` 事件带的 `arguments` 本来就是**原始 JSON 文本**
+  （`crates/mrorcode-cli/src/headless.rs`），`intent` 作为其中一个键原样透传，
+  下游消费方自己取。JSONL 契约（`SCHEMA_VERSION = 1`）**不新增字段**，也不要为它在
+  `tool.started` 里另开一个 `intent` 键——那会让同一个信息出现两条真源。
 - **实现**：纯调用元数据，工具实现不需要读取它；解析在 CLI 侧（`repl.rs` 的 `tool_intent`）。
 
 ### 错误返回

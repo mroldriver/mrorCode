@@ -87,7 +87,7 @@ impl Tool for GrepTool {
         match result {
             Ok(Ok((lines, truncated))) => {
                 if lines.is_empty() {
-                    return ToolResult::ok("grep", "[no matches]");
+                    return ToolResult::ok("grep", "no matches");
                 }
                 let mut out = lines.join("\n");
                 if truncated {
