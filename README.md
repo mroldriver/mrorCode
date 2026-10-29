@@ -135,6 +135,7 @@ env = { FOO = "bar" }
 | `MRORCODE_LOG_DIR=<dir>` | 改日志目录 |
 | `MRORCODE_LOG_LEVEL=info` | 文件层级别（默认 `debug`） |
 | `RUST_LOG=...` | 只影响 stderr 的实时诊断 |
+| `MRORCODE_REPL_PREVIEW_LINES=15` | REPL 长回复折叠阈值（超过则只显示前 N 行，`/full` 展开） |
 
 ## 键位（默认）
 

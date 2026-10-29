@@ -202,7 +202,7 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
     );
     let _ = writeln!(
         out,
-        "{}  {}\n{}",
+        "{}  {}\n{}\n",
         dim("permission:"),
         green(mode_name(mode)),
         dim("· /help for commands · /exit or Ctrl-D to quit")
@@ -231,7 +231,7 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
             if let Some(log) = &log {
                 log.slash(body);
             }
-            if run_slash(body, assembly, &mut out, &mut mode)? {
+            if run_slash(body, assembly, &mut out, &mut mode, &mut render)? {
                 let _ = writeln!(out, "bye.");
                 break;
             }
@@ -241,6 +241,8 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
             log.user(trimmed);
         }
         let _ = writeln!(out);
+        // 主循环自己写了这行空行，同步排版状态（下一张工具卡不会再补一个）。
+        render.note_blank();
         assembly.handle.submit(REPL_SESSION, trimmed.to_string());
 
         // ---- working：drain 事件直到终态 ----
@@ -276,33 +278,99 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
 /// 流式正文可能停在句子中间（`我来查一下。`），而工具卡/结果行必须是独立的一行，
 /// 轮末还要留空行给下一次输入——三者都依赖「光标现在是否在行首」这一个事实，
 /// 所以集中放在这里，避免每个分支各自数换行。
-#[derive(Default)]
 struct ReplRender {
     /// 上一次输出之后光标是否已经在行首（初始为 true：屏幕上是干净的一行）。
     at_line_start: bool,
+    /// 上一次写出的内容就是空行——`blank()` 据此保持幂等（连写两次只留一个空行）。
+    blank_emitted: bool,
     /// 工具调用 id → 工具卡备忘（结果行据此去重参数），供 `ToolResult` 复用同一行前缀。
     pending: HashMap<String, PendingTool>,
+    /// 本轮已流式写出的正文（用于长回复折叠与 `/full` 重放）。
+    turn_text: String,
+    /// 本轮已实时写出的行数（折叠阈值判断）。
+    emitted_newlines: usize,
+    /// 已超过阈值：后续正文只累积不输出。
+    folded: bool,
+    /// 上一轮的完整正文；`/full` 重放它。
+    last_turn: Option<String>,
+    /// 折叠阈值（行）。可用 `MRORCODE_REPL_PREVIEW_LINES` 覆盖。
+    preview_lines: usize,
+}
+
+/// 长回复折叠提示里的省略号前缀。
+const FOLD_HINT: &str = "… 已折叠";
+
+/// 取 `s` 的前 `max_newlines` 行（含行尾换行符），返回（前缀，是否还有剩余）。
+///
+/// 用来把「一次 delta 跨越多行」按行切开，保证折叠点落在行边界上：
+/// 既不会因为一次给了 100 行就整段丢弃，也不会整段放出来。
+fn take_lines(s: &str, max_newlines: usize) -> (&str, bool) {
+    if max_newlines == 0 {
+        return ("", !s.is_empty());
+    }
+    let mut count = 0;
+    for (idx, ch) in s.char_indices() {
+        if ch == '\n' {
+            count += 1;
+            if count == max_newlines {
+                let end = idx + ch.len_utf8();
+                return (&s[..end], end < s.len());
+            }
+        }
+    }
+    (s, false)
 }
 
 impl ReplRender {
     fn new() -> Self {
+        let preview_lines = std::env::var("MRORCODE_REPL_PREVIEW_LINES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(15);
         Self {
             at_line_start: true,
+            blank_emitted: false,
             pending: HashMap::new(),
+            turn_text: String::new(),
+            emitted_newlines: 0,
+            folded: false,
+            last_turn: None,
+            preview_lines,
         }
     }
 
     /// 流式正文：原样写出，并记录落点是否在行首。
     /// 跳过 LLM 输出的纯 `...` 过渡行（如思考停顿的省略号）。
+    ///
+    /// 超过折叠阈值后不再实时输出（issue #11 的 4-A）：文本继续累积，轮末给一行
+    /// 灰色提示，用户可以 `/full` 重放。短回复（大多数情况）行为完全不变。
+    /// 单个 delta 跨过阈值时按行切开——只写到阈值那一行，避免「一次给 100 行」时
+    /// 要么全丢、要么全放。
     fn text(&mut self, out: &mut dyn Write, t: &str) {
         let trimmed = t.trim();
         if trimmed == "..." || trimmed == "…" {
             return;
         }
-        let _ = write!(out, "{t}");
-        let _ = out.flush();
-        if let Some(last) = t.chars().last() {
-            self.at_line_start = last == '\n';
+        self.turn_text.push_str(t);
+        if self.folded {
+            return;
+        }
+        let budget = self.preview_lines.saturating_sub(self.emitted_newlines);
+        let (head, truncated) = take_lines(t, budget);
+        if !head.is_empty() {
+            let _ = write!(out, "{head}");
+            let _ = out.flush();
+            self.blank_emitted = false;
+            if let Some(last) = head.chars().last() {
+                self.at_line_start = last == '\n';
+            }
+        }
+        self.emitted_newlines += head.matches('\n').count();
+        if truncated {
+            // 收尾当前行，避免折叠提示粘在正文中间。
+            self.folded = true;
+            self.break_line(out);
         }
     }
 
@@ -319,13 +387,72 @@ impl ReplRender {
         self.break_line(out);
         let _ = writeln!(out, "{s}");
         self.at_line_start = true;
+        self.blank_emitted = false;
     }
 
     /// 空行——「呼吸感」：段落之间、轮末与下一次输入之间各留一行。
+    ///
+    /// 幂等：已经有一个空行时再调用不会叠出第二个（结果行后本就留了空行）。
     fn blank(&mut self, out: &mut dyn Write) {
         self.break_line(out);
+        if self.blank_emitted {
+            return;
+        }
         let _ = writeln!(out);
         self.at_line_start = true;
+        self.blank_emitted = true;
+    }
+
+    /// 外部（主循环的 `writeln!`、rustyline 审批提示）已经写过换行/空行，同步状态。
+    fn note_blank(&mut self) {
+        self.at_line_start = true;
+        self.blank_emitted = true;
+    }
+
+    /// 本轮结束：若发生过折叠，补一行提示；并记下完整正文供 `/full`。
+    fn finish_turn(&mut self, out: &mut dyn Write) {
+        let text = std::mem::take(&mut self.turn_text);
+        self.emitted_newlines = 0;
+        if text.trim().is_empty() {
+            self.last_turn = None;
+            self.folded = false;
+            return;
+        }
+        if self.folded {
+            let lines = text.lines().count();
+            let hidden = lines.saturating_sub(self.preview_lines);
+            self.break_line(out);
+            let _ = writeln!(
+                out,
+                "{}",
+                dim(&format!(
+                    "{FOLD_HINT} {hidden} 行（共 {lines} 行；输入 /full 查看全文）"
+                ))
+            );
+            self.at_line_start = true;
+            self.blank_emitted = false;
+        }
+        self.last_turn = Some(text);
+        self.folded = false;
+    }
+
+    /// `/full`：把上一轮被折叠的完整正文重放到屏幕。
+    ///
+    /// 返回 `false` 表示没有可展开的内容。
+    fn replay_last_turn(&mut self, out: &mut dyn Write) -> bool {
+        match self.last_turn.take() {
+            Some(text) if !text.trim().is_empty() => {
+                self.blank(out);
+                let _ = write!(out, "{text}");
+                if !text.ends_with('\n') {
+                    let _ = writeln!(out);
+                }
+                self.at_line_start = true;
+                self.blank_emitted = false;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// 外部（rustyline 审批提示）已经把光标送回了行首，这里同步状态。
@@ -361,6 +488,8 @@ fn handle_event(
                 .clone()
                 .unwrap_or_else(|| tool_card(&name, &arguments));
             // 模型正文常停在句子中间，工具卡必须自己另起一行。
+            // 正文与工具卡之间保持一个空行（issue #11 的 3），与「用户输入↔正文」一致。
+            render.blank(out);
             render.line(out, &format!("{} {}", cyan("●"), bold(&header)));
             // 记下「首行已经表达了参数」这件事：结果行据此决定要不要再重复一遍参数。
             render.pending.insert(
@@ -442,11 +571,14 @@ fn handle_event(
             );
         }
         AgentEvent::TurnComplete { .. } => {
+            // 长回复：补折叠提示；短回复这里什么也不做（issue #11 的 4-A）。
+            render.finish_turn(out);
             // 本轮输出与下一次输入之间留一行空白。
             render.blank(out);
             return Ok(true);
         }
         AgentEvent::Cancelled => {
+            render.finish_turn(out);
             render.line(out, &dim("(cancelled)"));
             render.blank(out);
             return Ok(true);
@@ -469,6 +601,7 @@ fn run_slash(
     assembly: &mut Assembly,
     out: &mut std::io::Stdout,
     mode: &mut PermissionMode,
+    render: &mut ReplRender,
 ) -> anyhow::Result<bool> {
     let mut parts = body.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
@@ -479,7 +612,7 @@ fn run_slash(
         "help" | "h" | "?" => {
             let _ = writeln!(
                 out,
-                "{}   {}\n{} {}\n{} {}\n{} {}\n{} {}",
+                "{}   {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
                 bold(&cyan("/help")),
                 dim("show this help"),
                 bold(&cyan("/model [name]")),
@@ -488,6 +621,8 @@ fn run_slash(
                 dim("show or set permission mode (no arg = cycle)"),
                 bold(&cyan("/interrupt")),
                 dim("cancel the running turn"),
+                bold(&cyan("/full")),
+                dim("replay the full text of the last turn (when folded)"),
                 bold(&cyan("/exit, /quit")),
                 dim("quit"),
             );
@@ -532,6 +667,11 @@ fn run_slash(
         "interrupt" | "cancel" | "esc" => {
             assembly.handle.cancel();
             let _ = writeln!(out, "{}", dim("(interrupt sent)"));
+        }
+        "full" => {
+            if !render.replay_last_turn(out) {
+                let _ = writeln!(out, "{}", dim("(没有可展开的内容)"));
+            }
         }
         other => {
             let _ = writeln!(
@@ -850,8 +990,73 @@ mod tests {
         // 正文已经以 \n 结尾时，工具卡不再补一个空行（否则会出现两行空白）。
         let text = render_segments(&[('t', "第一行\n"), ('l', "● 执行命令(ls)")]);
         assert_eq!(text, "第一行\n● 执行命令(ls)\n");
-        // 每次 blank 恰好产生一个空行，不会因为状态判断而叠加或丢失。
+        // blank() 幂等：连写两次仍然只有一个空行（结果行后本就留了空行）。
         let text = render_segments(&[('b', ""), ('b', "")]);
-        assert_eq!(text, "\n\n");
+        assert_eq!(text, "\n");
+    }
+
+    #[test]
+    fn blank_line_separates_body_and_tool_card() {
+        // issue #11 的 3：正文与工具卡之间恰好一个空行，和「用户输入↔正文」一致。
+        let text = render_segments(&[('t', "我先看看项目结构。"), ('b', ""), ('l', "● 查看目录")]);
+        assert_eq!(text, "我先看看项目结构。\n\n● 查看目录\n");
+        // 正文停在句子中间也一样：break_line 收尾再空一行，不会粘成一句。
+        let text = render_segments(&[('t', "我先看看"), ('b', ""), ('l', "● 查看目录")]);
+        assert_eq!(text, "我先看看\n\n● 查看目录\n");
+    }
+
+    #[test]
+    fn long_turn_is_folded_with_hint_and_replayable() {
+        // issue #11 的 4-A：超过阈值不再实时输出，轮末给折叠提示，/full 能重放全文。
+        let mut render = ReplRender::new();
+        render.preview_lines = 3;
+
+        let mut out: Vec<u8> = Vec::new();
+        for i in 0..10 {
+            render.text(&mut out, &format!("line {i}\n"));
+        }
+        let streamed = String::from_utf8(out.clone()).unwrap();
+        assert_eq!(streamed.lines().count(), 3, "streamed: {streamed}");
+
+        render.finish_turn(&mut out);
+        let after_turn = String::from_utf8(out).unwrap();
+        assert!(after_turn.contains("已折叠 7 行（共 10 行"), "{after_turn}");
+        assert!(after_turn.contains("/full"), "{after_turn}");
+
+        let mut replay: Vec<u8> = Vec::new();
+        assert!(render.replay_last_turn(&mut replay));
+        let full = String::from_utf8(replay).unwrap();
+        assert_eq!(
+            full.lines().filter(|l| l.starts_with("line ")).count(),
+            10,
+            "full: {full}"
+        );
+        // 重放后清空：再次 /full 没有内容。
+        assert!(!render.replay_last_turn(&mut Vec::new()));
+    }
+
+    #[test]
+    fn single_big_delta_is_cut_at_the_fold_boundary() {
+        // 一次 delta 给了 5 行：只写出前 3 行（不整段丢弃，也不整段放出来）。
+        let mut render = ReplRender::new();
+        render.preview_lines = 3;
+        let mut out: Vec<u8> = Vec::new();
+        render.text(&mut out, "a\nb\nc\nd\ne\n");
+        assert_eq!(String::from_utf8(out.clone()).unwrap(), "a\nb\nc\n");
+        render.finish_turn(&mut out);
+        let all = String::from_utf8(out).unwrap();
+        assert!(all.contains("已折叠 2 行（共 5 行"), "{all}");
+    }
+
+    #[test]
+    fn short_turn_is_not_folded() {
+        let mut render = ReplRender::new();
+        render.preview_lines = 5;
+        let mut out: Vec<u8> = Vec::new();
+        render.text(&mut out, "短回复第一行\n第二行\n");
+        render.finish_turn(&mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "短回复第一行\n第二行\n");
+        assert!(!text.contains("已折叠"));
     }
 }

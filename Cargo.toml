@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/mrorcode-cli"]
 
 [workspace.package]
-version = "0.6.9"
+version = "0.6.10"
 edition = "2021"
 license = "MIT"
 description = "A fast terminal AI coding agent"
@@ -25,6 +25,11 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# test 不自动继承 dev.package 设置，显式让测试时的依赖也不带 debug info，
+# 否则 cargo test 会比 cargo build 慢一大截（依赖仍在带 DWARF）。
+[profile.test.package."*"]
+debug = false
 
 # 本地迭代速度优先：dev 只保留行号表（backtrace 仍有文件:行号），
 # 依赖一律不带调试信息。默认 dev 的 debug=2 是全量 DWARF，是 target/ 体积
