@@ -55,6 +55,11 @@ async fn failing_command_returns_error_result() {
         .execute(&serde_json::json!({"command": command}).to_string(), &ctx)
         .await;
     assert!(result.is_error);
-    // 失败时 content 只保留纯输出（此处为空），退出码不再写入文本。
-    assert!(result.content.trim().is_empty());
+    // 失败结果首行回显实际使用的 shell（issue #5），后接纯输出（此处为空）。
+    let first_line = result.content.lines().next().unwrap_or_default();
+    assert!(
+        first_line.starts_with("[shell: ") && first_line.ends_with(']'),
+        "content: {:?}",
+        result.content
+    );
 }

@@ -31,7 +31,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return combined stdout/stderr. Read-only commands run without approval; others require permission."
+        "Execute a shell command and return combined stdout/stderr. On Windows it prefers Git Bash (falling back to cmd.exe); the result of a failed command starts with a [shell: ...] line naming the shell that actually ran. Read-only commands run without approval; others require permission."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -69,7 +69,7 @@ impl Tool for BashTool {
             .min(MAX_TIMEOUT_SECS);
         let duration = Duration::from_secs(timeout);
 
-        let mut cmd = build_shell_command(&args.command);
+        let (mut cmd, shell) = build_shell_command(&args.command);
         cmd.current_dir(ctx.working_dir)
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null());
@@ -112,26 +112,138 @@ impl Tool for BashTool {
         if output.status.success() {
             ToolResult::ok("bash", content)
         } else {
-            ToolResult::error("bash", content)
+            // 失败时回显实际使用的 shell：模型据此判断是命令写错还是 shell 语义不符
+            // （issue #5：Windows 上一直跑 cmd.exe，POSIX 写法系统性失败却看不出来）。
+            let mut text = format!("[shell: {}]\n", shell.label());
+            text.push_str(&content);
+            ToolResult::error("bash", text)
         }
     }
 }
 
-fn build_shell_command(command: &str) -> Command {
+/// 实际执行命令用的 shell。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellKind {
+    Bash,
+    Sh,
+    Cmd,
+}
+
+impl ShellKind {
+    fn label(self) -> &'static str {
+        match self {
+            ShellKind::Bash => "bash",
+            ShellKind::Sh => "sh",
+            ShellKind::Cmd => "cmd.exe",
+        }
+    }
+}
+
+/// 按可执行文件名判断 shell 风味（`bash.exe` / `/usr/bin/zsh` / `cmd.exe`）。
+fn shell_kind_of(program: &str) -> ShellKind {
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    match name.trim_end_matches(".exe") {
+        "bash" => ShellKind::Bash,
+        "cmd" => ShellKind::Cmd,
+        _ => ShellKind::Sh,
+    }
+}
+
+/// 在 PATH 里找第一个存在的可执行文件（Windows 上按 `;` 分隔）。
+///
+/// 跳过 `WindowsApps` 目录：那里的 `bash.exe` 只是 WSL 的应用执行别名，
+/// 在非交互上下文里会直接返回 ACCESS_DENIED（且按 Windows 路径传参也不兼容）。
+#[cfg(windows)]
+fn find_on_path(
+    name: &str,
+    path_var: Option<&str>,
+    is_file: &dyn Fn(&str) -> bool,
+) -> Option<String> {
+    let path_var = path_var?;
+    for dir in path_var.split(';') {
+        let dir = dir.trim().trim_matches('"');
+        if dir.is_empty() || dir.to_ascii_lowercase().contains("windowsapps") {
+            continue;
+        }
+        let candidate = format!("{dir}{}{name}", std::path::MAIN_SEPARATOR);
+        if is_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// 选择 shell：返回（可执行文件路径，风味）。
+///
+/// Windows 上**优先 Git Bash**：工具名、描述与系统提示词都是 POSIX 写法，
+/// 用 cmd.exe 执行会让 `| head`、`%h`、`$(...)` 系统性失败（issue #5）。
+/// `MRORCODE_SHELL` 可显式指定（测试也用它注入假路径，避免依赖本机是否装了 Git）。
+fn pick_shell_with(
+    get_env: &dyn Fn(&str) -> Option<String>,
+    is_file: &dyn Fn(&str) -> bool,
+    path_var: Option<&str>,
+) -> (String, ShellKind) {
+    if let Some(explicit) = get_env("MRORCODE_SHELL") {
+        let kind = shell_kind_of(&explicit);
+        return (explicit, kind);
+    }
+
     #[cfg(windows)]
     {
-        let shell = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-        let mut c = Command::new(shell);
-        c.args(["/C", command]);
-        c
+        if let Some(found) = find_on_path("bash.exe", path_var, is_file) {
+            return (found, ShellKind::Bash);
+        }
+        for candidate in [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ] {
+            if is_file(candidate) {
+                return (candidate.to_string(), ShellKind::Bash);
+            }
+        }
+        // Git Bash 未安装：若 SHELL 指向 bash 也可用。
+        if let Some(shell) = get_env("SHELL") {
+            if is_file(&shell) && shell_kind_of(&shell) == ShellKind::Bash {
+                return (shell, ShellKind::Bash);
+            }
+        }
+        let cmd = get_env("ComSpec").unwrap_or_else(|| "cmd.exe".to_string());
+        (cmd, ShellKind::Cmd)
     }
+
     #[cfg(not(windows))]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut c = Command::new(shell);
-        c.args(["-c", command]);
-        c
+        let _ = (is_file, path_var);
+        let shell = get_env("SHELL").unwrap_or_else(|| "/bin/sh".to_string());
+        let kind = shell_kind_of(&shell);
+        (shell, kind)
     }
+}
+
+/// 运行时版本：读取真实环境变量与文件系统。
+fn pick_shell() -> (String, ShellKind) {
+    let get_env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let path_var = std::env::var("PATH").ok();
+    pick_shell_with(
+        &get_env,
+        &|p| std::path::Path::new(p).is_file(),
+        path_var.as_deref(),
+    )
+}
+
+/// 组装 `shell + 命令` 的调用（返回实际 shell 供失败时回显）。
+fn build_shell_command(command: &str) -> (Command, ShellKind) {
+    let (program, kind) = pick_shell();
+    let mut c = Command::new(&program);
+    match kind {
+        ShellKind::Cmd => c.args(["/C", command]),
+        ShellKind::Bash | ShellKind::Sh => c.args(["-c", command]),
+    };
+    (c, kind)
 }
 
 /// UTF-8 失败时在 Windows 上回退 GBK 解码（中文终端常见）。
@@ -392,5 +504,77 @@ mod tests {
         assert_eq!(classify_command("cargo --version"), RiskLevel::Risky);
         assert_eq!(classify_command("cargo build"), RiskLevel::Risky);
         assert_eq!(classify_command("rustc --version"), RiskLevel::Risky);
+    }
+
+    #[test]
+    fn shell_kind_recognises_names() {
+        assert_eq!(
+            shell_kind_of(r"C:\Program Files\Git\bin\bash.exe"),
+            ShellKind::Bash
+        );
+        assert_eq!(shell_kind_of("/bin/sh"), ShellKind::Sh);
+        assert_eq!(
+            shell_kind_of(r"C:\Windows\System32\cmd.exe"),
+            ShellKind::Cmd
+        );
+        assert_eq!(shell_kind_of("/usr/bin/zsh"), ShellKind::Sh);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_shell_override_wins() {
+        let get = |k: &str| (k == "MRORCODE_SHELL").then(|| r"D:\fake\bash.exe".to_string());
+        let (program, kind) = pick_shell_with(&get, &|_| false, None);
+        assert_eq!(kind, ShellKind::Bash);
+        assert_eq!(program, r"D:\fake\bash.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bash_on_path_is_preferred_over_cmd() {
+        let get = |k: &str| match k {
+            "ComSpec" => Some(r"C:\Windows\system32\cmd.exe".to_string()),
+            _ => None,
+        };
+        let is_file = |p: &str| p.ends_with(r"Git\bin\bash.exe");
+        let (program, kind) =
+            pick_shell_with(&get, &is_file, Some(r"C:\Windows;C:\Program Files\Git\bin"));
+        assert_eq!(kind, ShellKind::Bash);
+        assert_eq!(program, r"C:\Program Files\Git\bin\bash.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_default_install_path_is_detected() {
+        let get = |k: &str| (k == "ComSpec").then(|| "cmd.exe".to_string());
+        let is_file = |p: &str| p == r"C:\Program Files\Git\bin\bash.exe";
+        let (program, kind) = pick_shell_with(&get, &is_file, None);
+        assert_eq!(kind, ShellKind::Bash);
+        assert_eq!(program, r"C:\Program Files\Git\bin\bash.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windowsapps_alias_is_skipped() {
+        // PATH 上的 `WindowsApps\bash.exe` 是 WSL 的应用别名，执行必然 ACCESS_DENIED，
+        // 不能当成可用的 bash（否则工具会把命令全交给它）。
+        let get = |k: &str| (k == "ComSpec").then(|| "cmd.exe".to_string());
+        let is_file = |p: &str| p.contains("WindowsApps");
+        let (program, kind) = pick_shell_with(
+            &get,
+            &is_file,
+            Some(r"C:\Users\X\AppData\Local\Microsoft\WindowsApps"),
+        );
+        assert_eq!(kind, ShellKind::Cmd);
+        assert_eq!(program, "cmd.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn falls_back_to_cmd_when_no_bash_is_available() {
+        let get = |k: &str| (k == "ComSpec").then(|| "cmd.exe".to_string());
+        let (program, kind) = pick_shell_with(&get, &|_| false, Some(r"C:\Windows"));
+        assert_eq!(kind, ShellKind::Cmd);
+        assert_eq!(program, "cmd.exe");
     }
 }
