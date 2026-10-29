@@ -152,12 +152,7 @@ fn apply_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mrorcode_kernel::request::RequestBroker;
-
-    async fn test_requester() -> mrorcode_kernel::Requester {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        RequestBroker::new(tx).handle()
-    }
+    use crate::tools::testkit::{ctx_for, test_requester};
 
     fn setup(tag: &str, content: &str) -> (std::path::PathBuf, Arc<ReadTracker>) {
         let dir = std::env::temp_dir().join(format!("mrorcode-edit-{}-{tag}", std::process::id()));
@@ -174,13 +169,7 @@ mod tests {
         let tool = EditFileTool::new(tracker);
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool
             .execute(r#"{"path":"a.txt","old":"world","new":"rust"}"#, &ctx)
             .await;
@@ -199,13 +188,7 @@ mod tests {
         let tool = EditFileTool::new(tracker);
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool
             .execute(r#"{"path":"a.txt","old":"x","new":"y"}"#, &ctx)
             .await;
@@ -220,13 +203,7 @@ mod tests {
         let tool = EditFileTool::new(tracker);
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool
             .execute(
                 r#"{"path":"a.txt","old":"x","new":"y","replace_all":true}"#,
@@ -247,13 +224,7 @@ mod tests {
         let tool = EditFileTool::new(tracker);
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool
             .execute(r#"{"path":"a.txt","old":"zzz","new":"q"}"#, &ctx)
             .await;

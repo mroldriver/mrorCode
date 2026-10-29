@@ -8,6 +8,9 @@ pub mod grep;
 pub mod read;
 pub mod read_tracker;
 pub mod task;
+/// 各工具单测共用的 `test_requester()` / `ctx_for()`（issue #13），只在测试构建里存在。
+#[cfg(test)]
+pub mod testkit;
 pub mod write;
 
 use std::sync::Arc;

@@ -133,12 +133,7 @@ fn run_glob(workdir: &Path, root: &Path, pattern: &str) -> Result<Vec<String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mrorcode_kernel::request::RequestBroker;
-
-    async fn test_requester() -> mrorcode_kernel::Requester {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        RequestBroker::new(tx).handle()
-    }
+    use crate::tools::testkit::{ctx_for, test_requester};
 
     #[tokio::test]
     async fn matches_and_respects_gitignore() {
@@ -154,13 +149,7 @@ mod tests {
         let tool = GlobTool;
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool.execute(r#"{"pattern":"**/*.rs"}"#, &ctx).await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("main.rs"));

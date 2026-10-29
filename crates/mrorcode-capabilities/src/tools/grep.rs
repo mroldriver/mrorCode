@@ -187,12 +187,7 @@ fn run_grep(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mrorcode_kernel::request::RequestBroker;
-
-    async fn test_requester() -> mrorcode_kernel::Requester {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        RequestBroker::new(tx).handle()
-    }
+    use crate::tools::testkit::{ctx_for, test_requester};
 
     #[tokio::test]
     async fn finds_lines_with_path_and_number() {
@@ -204,13 +199,7 @@ mod tests {
         let tool = GrepTool;
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool
             .execute(r#"{"pattern":"fn \\w+","include":"*.rs"}"#, &ctx)
             .await;
@@ -227,13 +216,7 @@ mod tests {
         let tool = GrepTool;
         let cancel = tokio_util::sync::CancellationToken::new();
         let req = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &req,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &req);
         let r = tool.execute(r#"{"pattern":"(unclosed"}"#, &ctx).await;
         assert!(r.is_error);
         assert!(r.content.contains("invalid regex"));

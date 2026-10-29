@@ -134,26 +134,7 @@ fn write_blocking(path: &std::path::Path, content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mrorcode_kernel::request::RequestBroker;
-
-    async fn test_requester() -> mrorcode_kernel::Requester {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        RequestBroker::new(tx).handle()
-    }
-
-    fn ctx_for<'a>(
-        dir: &'a std::path::Path,
-        cancel: &'a tokio_util::sync::CancellationToken,
-        req: &'a mrorcode_kernel::Requester,
-    ) -> ToolContext<'a> {
-        ToolContext {
-            working_dir: dir,
-            cancel,
-            request: req,
-            tool_id: "",
-            event_sink: None,
-        }
-    }
+    use crate::tools::testkit::{ctx_for, test_requester};
 
     #[tokio::test]
     async fn creates_new_file() {

@@ -132,6 +132,7 @@ fn read_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::testkit::{ctx_for, test_requester};
 
     #[tokio::test]
     async fn reads_with_line_numbers_and_pagination() {
@@ -143,13 +144,7 @@ mod tests {
         let tool = ReadFileTool::default();
         let cancel = tokio_util::sync::CancellationToken::new();
         let requester = test_requester().await;
-        let ctx = ToolContext {
-            working_dir: &dir,
-            cancel: &cancel,
-            request: &requester,
-            tool_id: "",
-            event_sink: None,
-        };
+        let ctx = ctx_for(&dir, &cancel, &requester);
 
         let r = tool.execute(r#"{"path":"a.txt"}"#, &ctx).await;
         assert!(r.content.contains("l2"));
@@ -161,11 +156,5 @@ mod tests {
         assert!(!r2.content.contains("l3"));
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    async fn test_requester() -> mrorcode_kernel::Requester {
-        // 只读工具不会发请求；构造一个指向已关闭通道的句柄即可
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        mrorcode_kernel::request::RequestBroker::new(tx).handle()
     }
 }
