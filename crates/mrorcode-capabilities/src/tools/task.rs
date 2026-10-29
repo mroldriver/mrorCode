@@ -1,6 +1,6 @@
 //! task：委派一个只读子 agent 完成子任务（M4-10）。
 //!
-//! 只持只读工具（read_file/glob/grep），不挂写/改/bash；结果以最终文本回灌，
+//! 只持只读工具（read/glob/grep），不挂写/改/bash；结果以最终文本回灌，
 //! 作为普通工具卡呈现（实时嵌套视图为可选加分项，暂不做）。
 
 use std::sync::Arc;
@@ -34,7 +34,7 @@ struct Args {
 impl TaskTool {
     /// 构造 task 工具。
     ///
-    /// `read_only` 必须是纯只读工具注册表（read_file/glob/grep 等），
+    /// `read_only` 必须是纯只读工具注册表（read/glob/grep 等），
     /// `sub_system_prompt` 为子 agent 的 persona；`model` 可选模型覆盖（None 用 provider 默认）。
     pub fn new(
         provider: Arc<dyn LlmProvider>,
@@ -59,7 +59,7 @@ impl Tool for TaskTool {
 
     fn description(&self) -> &str {
         "Delegate a read-only research subtask to a sub-agent. The sub-agent may only use \
-         read-only tools (read_file/glob/grep); it never edits or runs commands. Returns the \
+         read-only tools (read/glob/grep); it never edits or runs commands. Returns the \
          sub-agent's final text answer."
     }
 

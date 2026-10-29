@@ -17,7 +17,7 @@ fn long_conversation(turns: usize) -> Conversation {
         c.push(Message::assistant_tool_calls(vec![
             mrorcode_kernel::ToolCall {
                 id: format!("call_{i}"),
-                name: "read_file".into(),
+                name: "read".into(),
                 arguments: format!(r#"{{"path":"src/module{i}.rs"}}"#),
             },
         ]));

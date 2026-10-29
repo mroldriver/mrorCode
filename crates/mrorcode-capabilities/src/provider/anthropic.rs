@@ -609,7 +609,7 @@ mod tests {
     fn tool_result_merged_into_user() {
         let msgs = [
             Message::user("read file"),
-            Message::assistant_tool_calls(vec![ToolCall::new("c1", "read_file")]),
+            Message::assistant_tool_calls(vec![ToolCall::new("c1", "read")]),
             Message::tool_result(&mrorcode_kernel::tool::ToolResult {
                 call_id: "c1".into(),
                 content: "file contents".into(),

@@ -1,4 +1,4 @@
-//! read_file：只读文件读取工具（Safe）。
+//! read：只读文件读取工具（Safe）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -45,7 +45,7 @@ struct Args {
 #[async_trait]
 impl Tool for ReadFileTool {
     fn name(&self) -> &str {
-        "read_file"
+        "read"
     }
 
     fn description(&self) -> &str {
@@ -73,7 +73,7 @@ impl Tool for ReadFileTool {
             Ok(a) => a,
             Err(e) => {
                 return ToolResult::error(
-                    "read_file",
+                    "read",
                     json!({"error": format!("bad arguments: {e}")}).to_string(),
                 );
             }
@@ -83,7 +83,7 @@ impl Tool for ReadFileTool {
             Ok(p) => p,
             Err(message) => {
                 return ToolResult::error(
-                    "read_file",
+                    "read",
                     json!({"path": args.path, "error": message}).to_string(),
                 );
             }
@@ -95,14 +95,14 @@ impl Tool for ReadFileTool {
         match result {
             Ok(Ok(content)) => {
                 self.tracker.mark(&track_path);
-                ToolResult::ok("read_file", content)
+                ToolResult::ok("read", content)
             }
             Ok(Err(message)) => ToolResult::error(
-                "read_file",
+                "read",
                 json!({"path": args.path, "error": message}).to_string(),
             ),
             Err(e) => ToolResult::error(
-                "read_file",
+                "read",
                 json!({"error": format!("join error: {e}")}).to_string(),
             ),
         }

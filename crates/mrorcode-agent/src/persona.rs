@@ -17,7 +17,7 @@ Environment:
 - Available tools: {tool_list}.
 
 Working discipline:
-- Before editing a file, read it first with read_file; never invent file contents or paths.
+- Before editing a file, read it first with read; never invent file contents or paths.
 - Use glob/grep to locate code, then read before you write. Keep edits minimal and focused.
 - Every tool call MUST carry `intent`: one short sentence in the user's language saying what you
   are trying to accomplish with that call. It is shown to the user as the title line of the tool
@@ -40,10 +40,10 @@ pub fn read_only_sub_persona(working_dir: &Path) -> String {
 Environment:
 - Current date: {date}
 - Working directory: {wd}
-- Available tools: read_file, glob, grep.
+- Available tools: read, glob, grep.
 
 Rules:
-- You may ONLY use read-only tools (read_file/glob/grep). You cannot edit files or run commands.
+- You may ONLY use read-only tools (read/glob/grep). You cannot edit files or run commands.
 - Every tool call MUST carry `intent`: one short sentence saying what you are looking for with
   that call (same language as the task description). It is shown to the user as the tool card title.
 - Investigate thoroughly, then produce a concise, self-contained answer covering what you found,

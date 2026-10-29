@@ -1,4 +1,4 @@
-//! edit_file：精确串替换（Risky）。唯一匹配失败时返回结构化错误供模型自纠。
+//! edit：精确串替换（Risky）。唯一匹配失败时返回结构化错误供模型自纠。
 
 use std::sync::Arc;
 
@@ -34,12 +34,12 @@ struct Args {
 #[async_trait]
 impl Tool for EditFileTool {
     fn name(&self) -> &str {
-        "edit_file"
+        "edit"
     }
 
     fn description(&self) -> &str {
         "Replace an exact string in a file within the working directory. The file must be read first \
-         with read_file. By default `old` must match exactly once; set replace_all to replace every \
+         with read. By default `old` must match exactly once; set replace_all to replace every \
          occurrence. Returns a unified diff of the change."
     }
 
@@ -66,14 +66,14 @@ impl Tool for EditFileTool {
             Ok(a) => a,
             Err(e) => {
                 return ToolResult::error(
-                    "edit_file",
+                    "edit",
                     json!({"error": format!("bad arguments: {e}")}).to_string(),
                 );
             }
         };
         if args.old.is_empty() {
             return ToolResult::error(
-                "edit_file",
+                "edit",
                 json!({"error": "`old` must not be empty"}).to_string(),
             );
         }
@@ -82,17 +82,17 @@ impl Tool for EditFileTool {
             Ok(p) => p,
             Err(message) => {
                 return ToolResult::error(
-                    "edit_file",
+                    "edit",
                     json!({"path": args.path, "error": message}).to_string(),
                 );
             }
         };
         if !self.tracker.is_fresh(&path) {
             return ToolResult::error(
-                "edit_file",
+                "edit",
                 json!({
                     "path": args.path,
-                    "error": "file changed on disk or was not read; read it with read_file before editing",
+                    "error": "file changed on disk or was not read; read it with read before editing",
                 })
                 .to_string(),
             );
@@ -101,13 +101,13 @@ impl Tool for EditFileTool {
         let count = count_matches(std::fs::read_to_string(&path), &args.old);
         if count == 0 {
             return ToolResult::error(
-                "edit_file",
+                "edit",
                 json!({"path": args.path, "error": "`old` not found in file"}).to_string(),
             );
         }
         if count > 1 && !args.replace_all {
             return ToolResult::error(
-                "edit_file",
+                "edit",
                 json!({
                     "path": args.path,
                     "error": format!("`old` is ambiguous: found {count} matches; add more context or set replace_all"),
@@ -133,16 +133,16 @@ impl Tool for EditFileTool {
                     .unwrap_or_else(|| "(no changes)".to_string());
                 let replaced = if args.replace_all { count } else { 1 };
                 ToolResult::ok(
-                    "edit_file",
+                    "edit",
                     format!("Edited {} ({replaced} replacement(s))\n{diff}", args.path),
                 )
             }
             Ok(Err(message)) => ToolResult::error(
-                "edit_file",
+                "edit",
                 json!({"path": args.path, "error": message}).to_string(),
             ),
             Err(e) => ToolResult::error(
-                "edit_file",
+                "edit",
                 json!({"error": format!("join error: {e}")}).to_string(),
             ),
         }

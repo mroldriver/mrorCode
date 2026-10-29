@@ -1,4 +1,4 @@
-//! write_file：整文件写入（Risky）。覆盖已存在文件时产出 unified diff。
+//! write：整文件写入（Risky）。覆盖已存在文件时产出 unified diff。
 
 use std::sync::Arc;
 
@@ -34,12 +34,12 @@ struct Args {
 #[async_trait]
 impl Tool for WriteFileTool {
     fn name(&self) -> &str {
-        "write_file"
+        "write"
     }
 
     fn description(&self) -> &str {
         "Write a UTF-8 text file within the working directory (creates or overwrites). \
-         Overwriting an existing file requires reading it first with read_file. \
+         Overwriting an existing file requires reading it first with read. \
          Returns a unified diff when replacing an existing file."
     }
 
@@ -64,14 +64,14 @@ impl Tool for WriteFileTool {
             Ok(a) => a,
             Err(e) => {
                 return ToolResult::error(
-                    "write_file",
+                    "write",
                     json!({"error": format!("bad arguments: {e}")}).to_string(),
                 );
             }
         };
         if args.content.len() > MAX_WRITE_BYTES {
             return ToolResult::error(
-                "write_file",
+                "write",
                 json!({"error": format!("content too large ({} bytes > {MAX_WRITE_BYTES})", args.content.len())})
                     .to_string(),
             );
@@ -81,7 +81,7 @@ impl Tool for WriteFileTool {
             Ok(p) => p,
             Err(message) => {
                 return ToolResult::error(
-                    "write_file",
+                    "write",
                     json!({"path": args.path, "error": message}).to_string(),
                 );
             }
@@ -90,10 +90,10 @@ impl Tool for WriteFileTool {
         let existing = std::fs::read_to_string(&path).ok();
         if existing.is_some() && !self.tracker.is_fresh(&path) {
             return ToolResult::error(
-                "write_file",
+                "write",
                 json!({
                     "path": args.path,
-                    "error": "file changed on disk or was not read; read it with read_file before overwriting",
+                    "error": "file changed on disk or was not read; read it with read before overwriting",
                 })
                 .to_string(),
             );
@@ -116,14 +116,14 @@ impl Tool for WriteFileTool {
                     },
                     None => format!("Wrote {} ({} bytes)", args.path, args.content.len()),
                 };
-                ToolResult::ok("write_file", summary)
+                ToolResult::ok("write", summary)
             }
             Ok(Err(message)) => ToolResult::error(
-                "write_file",
+                "write",
                 json!({"path": args.path, "error": message}).to_string(),
             ),
             Err(e) => ToolResult::error(
-                "write_file",
+                "write",
                 json!({"error": format!("join error: {e}")}).to_string(),
             ),
         }
@@ -202,7 +202,7 @@ mod tests {
             .execute(r#"{"path":"a.txt","content":"new"}"#, &ctx)
             .await;
         assert!(r.is_error);
-        assert!(r.content.contains("read it with read_file"));
+        assert!(r.content.contains("read it with read"));
 
         // 标记已读后放行，并产出 diff
         tracker.mark(&dir.join("a.txt").canonicalize().unwrap());

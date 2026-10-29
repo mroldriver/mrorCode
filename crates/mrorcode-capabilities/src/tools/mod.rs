@@ -1,4 +1,4 @@
-//! 内置工具（M3：read_file、write_file、edit_file、bash、glob、grep）。
+//! 内置工具（M3：read、write、edit、bash、glob、grep）。
 
 pub mod bash;
 pub mod diff;

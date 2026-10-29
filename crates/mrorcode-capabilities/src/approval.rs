@@ -257,6 +257,6 @@ mod tests {
     fn grant_keys_are_command_scoped_for_bash() {
         let k1 = grant_key("bash", r#"{"command":"rm x"}"#);
         assert_eq!(k1, "bash::rm x");
-        assert_eq!(grant_key("read_file", "{}"), "read_file");
+        assert_eq!(grant_key("read", "{}"), "read");
     }
 }

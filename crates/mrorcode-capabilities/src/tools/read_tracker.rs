@@ -1,4 +1,4 @@
-//! read-before-write 追踪：write/edit 前必须已由 read_file 读过该文件。
+//! read-before-write 追踪：write/edit 前必须已由 read 读过该文件。
 //!
 //! 共享于 read/write/edit 工具实例之间，记录「已读且未在读取后被外部修改」的路径。
 //! 记录键为规范化路径；读取时附带 mtime+len 指纹，命中时校验指纹以防陈旧覆盖。

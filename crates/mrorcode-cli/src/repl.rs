@@ -546,9 +546,9 @@ fn recv_outcome(rx: &std_mpsc::Receiver<ReplOutcome>) -> ReplOutcome {
 /// 工具中文标签；未知工具（含将来的 MCP 工具）返回 `None`，由调用方回退到原名。
 fn tool_label(name: &str) -> Option<&'static str> {
     Some(match name {
-        "read_file" => "读取文件",
-        "write_file" => "写入文件",
-        "edit_file" => "编辑文件",
+        "read" => "读取文件",
+        "write" => "写入文件",
+        "edit" => "编辑文件",
         "bash" => "执行命令",
         "grep" => "搜索内容",
         "glob" => "查找文件",
@@ -565,7 +565,7 @@ fn tool_detail(name: &str, arguments: &str) -> String {
     let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
     match name {
         // 路径保留原样：模型给的多是相对工作目录的写法，尾部才是关键信息。
-        "read_file" | "write_file" | "edit_file" => clip_tail(get("path"), 100),
+        "read" | "write" | "edit" => clip_tail(get("path"), 100),
         "bash" => clip_head(get("command"), 120),
         "grep" | "glob" => clip_head(get("pattern"), 100),
         // 子任务优先用简短标签，没有就取 prompt 第一行。
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn known_tool_labels_are_chinese() {
-        assert_eq!(tool_label("read_file"), Some("读取文件"));
+        assert_eq!(tool_label("read"), Some("读取文件"));
         assert_eq!(tool_label("bash"), Some("执行命令"));
         assert_eq!(tool_label("grep"), Some("搜索内容"));
         // 未知工具不猜中文名，由 tool_card 回退成 `调用 <原名>`。
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn tool_card_puts_detail_in_parens() {
-        let card = tool_card("read_file", r#"{"path":"crates/mrorcode-cli/src/repl.rs"}"#);
+        let card = tool_card("read", r#"{"path":"crates/mrorcode-cli/src/repl.rs"}"#);
         assert_eq!(card, "读取文件(crates/mrorcode-cli/src/repl.rs)");
         let card = tool_card("bash", r#"{"command":"cargo check --workspace"}"#);
         assert_eq!(card, "执行命令(cargo check --workspace)");
@@ -668,8 +668,8 @@ mod tests {
     #[test]
     fn tool_card_falls_back_to_label_or_raw_name() {
         // 参数非法/为空：只留标签，不出现空括号。
-        assert_eq!(tool_card("write_file", "not json"), "写入文件");
-        assert_eq!(tool_card("write_file", "{}"), "写入文件");
+        assert_eq!(tool_card("write", "not json"), "写入文件");
+        assert_eq!(tool_card("write", "{}"), "写入文件");
         // 未知工具保留原名，便于识别（将来接 MCP 也不会显示成空壳）。
         assert_eq!(
             tool_card("mcp__fs__stat", r#"{"path":"a.txt"}"#),
