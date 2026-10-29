@@ -1533,3 +1533,24 @@ TUI provider picker/拒绝切换/成功替换/失败保留 4 个。
 
 **验证**：`cargo test --workspace` 282 测试全绿、`cargo clippy --workspace --all-targets
 -- -D warnings` 零告警、`cargo fmt --check` 通过（版本 0.5.6）。
+
+---
+
+## 遗留 backlog：issue 关闭时的沉淀（2026-10-29）
+
+`docs/todos/` 只放进行中的清单。issue #5 / #11 关闭时按 `AGENTS.md` 的约定删掉对应 todo，
+其中仍有价值的条目先并入此处，避免随 todo 一起消失。
+
+- **REPL 用户输入彩色重打**（原 issue #11 问题 2-C）：行输入走 rustyline，已敲字符由它回显，
+  主循环拿不到文本去事后染色。方案 C（提交后把 trimmed 以彩色另起一行确认）仍需评估；
+  方案 A 会与 rustyline 回显重复，方案 B 等于自造行编辑。log 层的 `>>> ` 前缀（`runlog.rs`）
+  已解决「转录里分不清谁说的」，故 2-D 不再欠账。
+- **bash 结果单独限长**：目前所有工具共用 `DEFAULT_MAX_TOOL_RESULT_BYTES = 64 KiB` 的
+  head+tail 截断（`crates/mrorcode-kernel/src/agent.rs:27`，单测
+  `truncate_head_tail_keeps_boundaries`）。`dir /s` 一类命令一次就能打满 64 KiB，对 bash 偏大；
+  可考虑 bash 单独设 16 KiB，或在截断提示里要求模型缩小命令范围。
+- **`AgentEvent` 缺 `turn_id`**：`TextDelta` / `ToolStarted` / `ToolResult` 的归属只能靠
+  「当前消息」推断，多会话、排队、取消恢复这类边界没有显式路由键。裸 ANSI REPL 单会话下
+  顺序是自然的，加 `turn_id` 属结构性加固，不是当前痛点。
+- **`scripts/_check_cache.ps1`** 是 Agent 自建的临时脚本，确认无用后可删（同批的本地
+  `debug.log` / `log/` 在 2026-10-29 核对时已不存在）。

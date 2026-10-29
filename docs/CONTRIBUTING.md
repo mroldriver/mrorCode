@@ -375,8 +375,8 @@ samply record cargo run --release
 
 0.6 起没有 TUI，界面就是 `crates/mrorcode-cli/src/repl.rs` 的裸 ANSI 流式输出：
 
-1. 先读 `crates/mrorcode-cli/src/repl.rs`，再读 `docs/todos/20261028-repl-output-polish.md`
-   （已定位的排版问题清单，改一条勾一条）
+1. 先读 `crates/mrorcode-cli/src/repl.rs`（排版问题已随 issue #11 收口，历史清单见
+   `docs/roadmap.md` 的 backlog 章节）
 2. 改之前先看真实输出：`cargo run -- -C <某目录>` 跑一轮，或看 `~/.mrorcode/logs/` 里最新
    一份转录（含工具卡与 Markdown 渲染结果）
 3. 改完手动核对：长 Markdown 折叠、工具卡间距、用户输入与模型输出的区分度

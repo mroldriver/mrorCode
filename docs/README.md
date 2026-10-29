@@ -12,7 +12,7 @@
 | [roadmap.md](roadmap.md) | M1–M4 实施计划与完成报告（M1–M4 存档），M5 硬化发布（a–e 计划 + f 对标实施记录） | 混合（历史存档 + 进行中计划） |
 | [crossrepo-review-20261019.md](crossrepo-review-20261019.md) | 三库战略对标（mrorCode vs atomcode vs opencode）：架构方向、安全短板、能力补齐清单、M6 建议 | 现行（战略评审） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南：环境搭建、项目结构、常用命令、代码规范、提交流程、调试技巧、架构边界误区 | 现行 |
-| [todos/](todos/) | 单项对标/发布待办清单，按日期命名（如 [M5 硬化发布](todos/20260928-m5-hardening-release-硬化发布待办.md)、[代码审查发现](todos/20261019-code-review-findings.md)、[REPL 排版改进](todos/20261028-repl-output-polish.md)）；**issue 关闭后删除** | 现行 |
+| [todos/](todos/) | 单项对标/发布待办清单，按日期命名（如 [M5 硬化发布](todos/20260928-m5-hardening-release-硬化发布待办.md)、[代码审查发现](todos/20261019-code-review-findings.md)）；**issue 关闭后删除**，仍有价值的条目并入 [roadmap.md](roadmap.md) 的 backlog 章节 | 现行 |
 
 ## 维护约定
 
