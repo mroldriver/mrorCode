@@ -13,3 +13,5 @@
 /debug.log
 /log/
 /.local/
+# 测试临时目录（kernel/capabilities 的用例在 CWD 下建 .tmp-build/）
+/.tmp-build/

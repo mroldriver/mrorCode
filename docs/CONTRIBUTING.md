@@ -200,6 +200,23 @@ version = "0.5.63"   # ← 改这一行
 
 ## 五、提交流程
 
+### 5.0 先看 issue（硬约定）
+
+代码真源在 GitCode（`gitcode.com:mroldriver/mrorCode`），GitHub 只是镜像
+（见 `.github/workflows/mirror-from-gitcode.yml`）。**动代码前必须先有云端 issue**：
+
+1. 先搜 [Issues](https://gitcode.com/mroldriver/mrorCode/issues) 有没有同题；有就跟着它做，
+   已关闭但还能复现的就重新打开并补复现步骤。
+2. 没有就新建，标题带 `[BUG]` / `[IMPROVEMENT]` / `[DOCS]` 前缀，正文写清「现象与复现」、
+   「期望行为」、「影响面」（哪个 crate；是否触碰 headless JSONL 等冻结契约），
+   能附运行日志就附（见 6.1）。
+3. 需要多步推进的，在 `docs/todos/` 建清单，**首行写 issue 链接**；issue 正文回贴 todo 路径。
+4. commit 标题或 body 末尾写 `refs #<id>`，形成 `issue → todo → commit` 一条链。
+   不要用 `Fixes`/`Closes`：GitCode 不会据此自动关闭，关闭动作留在 issue 页面。
+5. **issue 关闭时删掉对应 todo**：`docs/todos/` 只留进行中的清单，issue 关闭（已解决或明确
+   不做）后 `git rm` 掉对应文件；结论留在 issue 与 commit 里，值得沉淀的经验先并入
+   `docs/roadmap.md` 再删。
+
 ### 5.1 提交前检查清单
 
 每次提交前确保：
@@ -225,6 +242,7 @@ cargo build --release
 - 标题简明扼要，说明做了什么
 - 必要时 body 里解释为什么这么做、有什么权衡
 - 如果是 bug 修复，说明触发条件和修复思路
+- 标题或 body 末尾写 `refs #<id>`（见 5.0），同一改动跟多个 issue 就写多个
 
 示例：
 
@@ -234,6 +252,8 @@ fix: 修复审批中间件未接线导致 Risky 工具直行的安全问题
 agent::runtime::start() 漏调了 AgentBuilder::add_middleware，
 导致 ApprovalMiddleware 形同虚设。已接线并加回归测试
 middleware_is_wired_into_the_agent，撤掉修复即失败。
+
+refs #12
 ```
 
 ### 5.3 文档同步
@@ -243,7 +263,8 @@ middleware_is_wired_into_the_agent，撤掉修复即失败。
 - 项目结构变化 → `AGENTS.md`
 - 架构/选型变化 → `docs/project-plan-atomcode.md`
 - 新里程碑/完成里程碑 → `docs/roadmap.md`
-- TUI 布局改动 → `docs/tui-layout-spec.md`
+- REPL 输出/工具卡排版改动 → `crates/mrorcode-cli/src/repl.rs` 与对应 `docs/todos/` 清单
+  （0.6 起 TUI 已移除，没有独立的布局 spec）
 - 新增文档 → `docs/README.md` 索引
 
 ---
@@ -339,7 +360,7 @@ samply record cargo run --release
 2. 实现 `Tool` trait（`name` / `description` / `parameters_schema` / `risk` / `execute`）
 3. 在 `tools/mod.rs` 的 `builtin_tools()` 里注册
 4. 加单测
-5. 如果有 UI 特殊展示需求（如 diff），在 `tui/src/widgets/` 对应地方接线
+5. 如果有 UI 特殊展示需求（如 diff），在 `crates/mrorcode-cli/src/repl.rs` 的工具卡渲染里接线
 
 ### 想加一个新 provider
 
@@ -350,12 +371,16 @@ samply record cargo run --release
 5. 用 wiremock 写集成测试
 6. 跑 conformance 套件验证事件序列正确
 
-### 想改 TUI 布局
+### 想改 REPL 输出
 
-1. 先读 `docs/tui-layout-spec.md`
-2. 改之前先查 opencode 源码（如果是对标功能）
-3. 用 `TestBackend` 写渲染断言
-4. 跑 render benchmark 确认没有性能回退
+0.6 起没有 TUI，界面就是 `crates/mrorcode-cli/src/repl.rs` 的裸 ANSI 流式输出：
+
+1. 先读 `crates/mrorcode-cli/src/repl.rs`，再读 `docs/todos/20261028-repl-output-polish.md`
+   （已定位的排版问题清单，改一条勾一条）
+2. 改之前先看真实输出：`cargo run -- -C <某目录>` 跑一轮，或看 `~/.mrorcode/logs/` 里最新
+   一份转录（含工具卡与 Markdown 渲染结果）
+3. 改完手动核对：长 Markdown 折叠、工具卡间距、用户输入与模型输出的区分度
+4. 不引入逐帧重解析；涉及热路径的改动要先用 benchmark 证明收益（见 AGENTS.md 的性能门槛）
 
 ---
 

@@ -1,5 +1,6 @@
 # TUI 表格渲染与 Windows shell 诊断（2026-10-28）
 
+> **Issue**：[#5 \[BUG\] Windows 下 bash 工具实际执行 cmd.exe，POSIX 命令系统性失败](https://gitcode.com/mroldriver/mrorCode/issues/5)
 > 结论先行：截图里「糊成一坨」的文字**不是**模型复读，也不是流式 delta 重复，
 > 而是 **Markdown 表格与列表没有块级渲染**；会话里模型反复 `ls` / `pwd` / `head` 失败，
 > 则是 **`bash` 工具在 Windows 上实际执行 cmd.exe，但工具名、描述、系统提示都按 POSIX 写**。
