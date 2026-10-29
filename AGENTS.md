@@ -96,6 +96,12 @@ cargo build --release                           # -> target/release/mrorcode.exe
 - **Testkit**: `mrorcode-kernel`'s `test-support` feature exposes `ScriptedProvider`/`EchoTool`
   plus the `stream_signature`/`assert_stream_sequence`/`assert_event_sequence` conformance
   asserters; the crates' dev-dependencies already enable it.
+- **`bash_exec` 集成测试在受限环境会自动跳过**：从原生进程直接拉起 Git Bash（MSYS2）时，它要按
+  名字创建 `\BaseNamedObjects\msys-*` 命名共享内存对象，受限 token / 企业沙箱下被
+  `0xC0000022`（`STATUS_ACCESS_DENIED`）拒绝，bash 在跑任何命令前就 abort——这是环境问题，
+  不是工具缺陷。`tests/bash_exec.rs` 只对 `fatal error - NtCreateDirectoryObject` 这个签名跳过
+  「真跑一次」步骤并打印原因，其余错误照常失败；工具逻辑由 `tools::bash` 的注入式单测
+  （`pick_shell_with`）覆盖，不依赖本机装 Git Bash。
 - **运行日志默认落盘**: `~/.mrorcode/logs/run-<UTC时间戳>.log`（`crates/mrorcode-cli/src/runlog.rs`）：
   会话转录 + `tracing` 诊断同文件、保留最近 20 份、默认脱敏（密钥打码、工具输出只留摘要）。
   `MRORCODE_LOG=0` 关闭，`MRORCODE_LOG_DIR`/`MRORCODE_LOG_LEVEL` 可调。新增日志内容一律走
