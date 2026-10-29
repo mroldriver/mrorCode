@@ -50,10 +50,7 @@ impl Tool for GlobTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "glob",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("glob", format!("bad arguments: {e}"));
             }
         };
 
@@ -61,7 +58,7 @@ impl Tool for GlobTool {
             Some(p) => match crate::path_guard::resolve_safe(ctx.working_dir, p) {
                 Ok(p) => p,
                 Err(message) => {
-                    return ToolResult::error("glob", json!({"error": message}).to_string());
+                    return ToolResult::error("glob", message);
                 }
             },
             None => ctx.working_dir.to_path_buf(),
@@ -84,11 +81,8 @@ impl Tool for GlobTool {
                 }
                 ToolResult::ok("glob", out)
             }
-            Ok(Err(message)) => ToolResult::error("glob", json!({"error": message}).to_string()),
-            Err(e) => ToolResult::error(
-                "glob",
-                json!({"error": format!("join error: {e}")}).to_string(),
-            ),
+            Ok(Err(message)) => ToolResult::error("glob", message),
+            Err(e) => ToolResult::error("glob", format!("join error: {e}")),
         }
     }
 }

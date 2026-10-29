@@ -57,10 +57,7 @@ impl Tool for BashTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "bash",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("bash", format!("bad arguments: {e}"));
             }
         };
         let timeout = args
@@ -80,20 +77,20 @@ impl Tool for BashTool {
         let output = tokio::select! {
             biased;
             _ = ctx.cancel.cancelled() => {
-                return ToolResult::error("bash", json!({"error":"cancelled"}).to_string());
+                return ToolResult::error("bash", "cancelled");
             }
             r = tokio::time::timeout(duration, run) => match r {
                 Ok(Ok(out)) => out,
                 Ok(Err(e)) => {
                     return ToolResult::error(
                         "bash",
-                        json!({"error": format!("failed to run command: {e}")}).to_string(),
+                        format!("failed to run command: {e}"),
                     );
                 }
                 Err(_) => {
                     return ToolResult::error(
                         "bash",
-                        json!({"error": format!("command timed out after {timeout}s")}).to_string(),
+                        format!("command timed out after {timeout}s"),
                     );
                 }
             },

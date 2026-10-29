@@ -65,55 +65,40 @@ impl Tool for EditFileTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "edit",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("edit", format!("bad arguments: {e}"));
             }
         };
         if args.old.is_empty() {
-            return ToolResult::error(
-                "edit",
-                json!({"error": "`old` must not be empty"}).to_string(),
-            );
+            return ToolResult::error("edit", "`old` must not be empty");
         }
 
         let path = match resolve_existing_file(ctx.working_dir, &args.path) {
             Ok(p) => p,
             Err(message) => {
-                return ToolResult::error(
-                    "edit",
-                    json!({"path": args.path, "error": message}).to_string(),
-                );
+                return ToolResult::error("edit", format!("{}: {message}", args.path));
             }
         };
         if !self.tracker.is_fresh(&path) {
             return ToolResult::error(
                 "edit",
-                json!({
-                    "path": args.path,
-                    "error": "file changed on disk or was not read; read it with read before editing",
-                })
-                .to_string(),
+                format!(
+                    "{}: file changed on disk or was not read; read it with read before editing",
+                    args.path
+                ),
             );
         }
 
         let count = count_matches(std::fs::read_to_string(&path), &args.old);
         if count == 0 {
-            return ToolResult::error(
-                "edit",
-                json!({"path": args.path, "error": "`old` not found in file"}).to_string(),
-            );
+            return ToolResult::error("edit", format!("{}: `old` not found in file", args.path));
         }
         if count > 1 && !args.replace_all {
             return ToolResult::error(
                 "edit",
-                json!({
-                    "path": args.path,
-                    "error": format!("`old` is ambiguous: found {count} matches; add more context or set replace_all"),
-                    "matches": count,
-                })
-                .to_string(),
+                format!(
+                    "{}: `old` is ambiguous: found {count} matches; add more context or set replace_all",
+                    args.path
+                ),
             );
         }
 
@@ -137,14 +122,8 @@ impl Tool for EditFileTool {
                     format!("Edited {} ({replaced} replacement(s))\n{diff}", args.path),
                 )
             }
-            Ok(Err(message)) => ToolResult::error(
-                "edit",
-                json!({"path": args.path, "error": message}).to_string(),
-            ),
-            Err(e) => ToolResult::error(
-                "edit",
-                json!({"error": format!("join error: {e}")}).to_string(),
-            ),
+            Ok(Err(message)) => ToolResult::error("edit", format!("{}: {message}", args.path)),
+            Err(e) => ToolResult::error("edit", format!("join error: {e}")),
         }
     }
 }

@@ -89,14 +89,11 @@ impl Tool for TaskTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "task",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("task", format!("bad arguments: {e}"));
             }
         };
         if args.prompt.trim().is_empty() {
-            return ToolResult::error("task", json!({"error": "prompt is required"}).to_string());
+            return ToolResult::error("task", "prompt is required");
         }
 
         let mut builder = AgentBuilder::new()
@@ -133,7 +130,7 @@ impl Tool for TaskTool {
                 _ = ctx.cancel.cancelled() => {
                     let _ = handle.commands.send(AgentCommand::Cancel);
                     let _ = handle.commands.send(AgentCommand::Shutdown);
-                    return ToolResult::error("task", json!({"error": "cancelled"}).to_string());
+                    return ToolResult::error("task", "cancelled");
                 }
                 ev = handle.events.recv() => match ev {
                     None => break mrorcode_kernel::StopReason::Cancelled,
@@ -171,10 +168,7 @@ impl Tool for TaskTool {
         let _ = handle.commands.send(AgentCommand::Shutdown);
 
         if answer.trim().is_empty() {
-            return ToolResult::error(
-                "task",
-                json!({"error": format!("sub-agent produced no answer ({stop:?})")}).to_string(),
-            );
+            return ToolResult::error("task", format!("sub-agent produced no answer ({stop:?})"));
         }
         ToolResult::ok("task", answer.trim_end().to_string())
     }

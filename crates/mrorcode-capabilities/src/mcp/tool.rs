@@ -61,10 +61,7 @@ impl Tool for McpTool {
         let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
         match self.client.call_tool(&self.remote_name, args).await {
             Ok(text) => ToolResult::ok(&self.qualified, text),
-            Err(message) => ToolResult::error(
-                &self.qualified,
-                serde_json::json!({ "error": message }).to_string(),
-            ),
+            Err(message) => ToolResult::error(&self.qualified, message),
         }
     }
 }
@@ -99,10 +96,7 @@ impl Tool for UnavailableMcpTool {
     }
 
     async fn execute(&self, _arguments: &str, _ctx: &ToolContext<'_>) -> ToolResult {
-        ToolResult::error(
-            &self.qualified,
-            serde_json::json!({"error": self.reason}).to_string(),
-        )
+        ToolResult::error(&self.qualified, &self.reason)
     }
 }
 

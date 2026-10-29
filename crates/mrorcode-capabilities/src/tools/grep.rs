@@ -61,10 +61,7 @@ impl Tool for GrepTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "grep",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("grep", format!("bad arguments: {e}"));
             }
         };
 
@@ -72,7 +69,7 @@ impl Tool for GrepTool {
             Some(p) => match crate::path_guard::resolve_safe(ctx.working_dir, p) {
                 Ok(p) => p,
                 Err(message) => {
-                    return ToolResult::error("grep", json!({"error": message}).to_string());
+                    return ToolResult::error("grep", message);
                 }
             },
             None => ctx.working_dir.to_path_buf(),
@@ -98,11 +95,8 @@ impl Tool for GrepTool {
                 }
                 ToolResult::ok("grep", out)
             }
-            Ok(Err(message)) => ToolResult::error("grep", json!({"error": message}).to_string()),
-            Err(e) => ToolResult::error(
-                "grep",
-                json!({"error": format!("join error: {e}")}).to_string(),
-            ),
+            Ok(Err(message)) => ToolResult::error("grep", message),
+            Err(e) => ToolResult::error("grep", format!("join error: {e}")),
         }
     }
 }

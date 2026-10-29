@@ -63,27 +63,23 @@ impl Tool for WriteFileTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "write",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("write", format!("bad arguments: {e}"));
             }
         };
         if args.content.len() > MAX_WRITE_BYTES {
             return ToolResult::error(
                 "write",
-                json!({"error": format!("content too large ({} bytes > {MAX_WRITE_BYTES})", args.content.len())})
-                    .to_string(),
+                format!(
+                    "content too large ({} bytes > {MAX_WRITE_BYTES})",
+                    args.content.len()
+                ),
             );
         }
 
         let path = match resolve_safe(ctx.working_dir, &args.path) {
             Ok(p) => p,
             Err(message) => {
-                return ToolResult::error(
-                    "write",
-                    json!({"path": args.path, "error": message}).to_string(),
-                );
+                return ToolResult::error("write", format!("{}: {message}", args.path));
             }
         };
 
@@ -91,11 +87,10 @@ impl Tool for WriteFileTool {
         if existing.is_some() && !self.tracker.is_fresh(&path) {
             return ToolResult::error(
                 "write",
-                json!({
-                    "path": args.path,
-                    "error": "file changed on disk or was not read; read it with read before overwriting",
-                })
-                .to_string(),
+                format!(
+                    "{}: file changed on disk or was not read; read it with read before overwriting",
+                    args.path
+                ),
             );
         }
 
@@ -118,14 +113,8 @@ impl Tool for WriteFileTool {
                 };
                 ToolResult::ok("write", summary)
             }
-            Ok(Err(message)) => ToolResult::error(
-                "write",
-                json!({"path": args.path, "error": message}).to_string(),
-            ),
-            Err(e) => ToolResult::error(
-                "write",
-                json!({"error": format!("join error: {e}")}).to_string(),
-            ),
+            Ok(Err(message)) => ToolResult::error("write", format!("{}: {message}", args.path)),
+            Err(e) => ToolResult::error("write", format!("join error: {e}")),
         }
     }
 }

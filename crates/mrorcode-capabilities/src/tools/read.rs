@@ -72,20 +72,14 @@ impl Tool for ReadFileTool {
         let args: Args = match serde_json::from_str(arguments) {
             Ok(a) => a,
             Err(e) => {
-                return ToolResult::error(
-                    "read",
-                    json!({"error": format!("bad arguments: {e}")}).to_string(),
-                );
+                return ToolResult::error("read", format!("bad arguments: {e}"));
             }
         };
 
         let path = match resolve_existing_file(ctx.working_dir, &args.path) {
             Ok(p) => p,
             Err(message) => {
-                return ToolResult::error(
-                    "read",
-                    json!({"path": args.path, "error": message}).to_string(),
-                );
+                return ToolResult::error("read", format!("{}: {message}", args.path));
             }
         };
         let track_path = path.clone();
@@ -97,14 +91,8 @@ impl Tool for ReadFileTool {
                 self.tracker.mark(&track_path);
                 ToolResult::ok("read", content)
             }
-            Ok(Err(message)) => ToolResult::error(
-                "read",
-                json!({"path": args.path, "error": message}).to_string(),
-            ),
-            Err(e) => ToolResult::error(
-                "read",
-                json!({"error": format!("join error: {e}")}).to_string(),
-            ),
+            Ok(Err(message)) => ToolResult::error("read", format!("{}: {message}", args.path)),
+            Err(e) => ToolResult::error("read", format!("join error: {e}")),
         }
     }
 }
