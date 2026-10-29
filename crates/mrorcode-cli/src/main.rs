@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use mrorcode_agent::AssembleOptions;
+use mrorcode_cli::runlog::RunLog;
 use mrorcode_cli::{headless, repl};
 use mrorcode_config::Config;
 
@@ -56,23 +57,20 @@ struct RunArgs {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    // 运行日志默认开启（`~/.mrorcode/logs/run-<时间戳>.log`）：转录与诊断行同文件，
+    // 保留最近 20 份；`MRORCODE_LOG=0` 可关闭。
+    let run_log = RunLog::start();
+    mrorcode_cli::runlog::init_tracing(run_log.as_ref());
 
     let cli = Cli::parse();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
-    rt.block_on(async_main(cli))
+    rt.block_on(async_main(cli, run_log))
 }
 
-async fn async_main(cli: Cli) -> anyhow::Result<()> {
+async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
     let working_dir = match cli.common.cd {
         Some(dir) => dir.canonicalize().unwrap_or(dir),
         None => std::env::current_dir()?,
@@ -126,7 +124,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             for w in &assembly.warnings {
                 eprintln!("mcp warning: {w}");
             }
-            let code = headless::run_headless(&mut assembly, &run.prompt, run.json).await;
+            let code =
+                headless::run_headless(&mut assembly, &run.prompt, run.json, run_log.as_ref())
+                    .await;
             assembly.handle.shutdown();
             std::process::exit(code);
         }
@@ -149,7 +149,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             for w in &assembly.warnings {
                 eprintln!("mcp warning: {w}");
             }
-            repl::run_repl(&mut assembly).await?;
+            repl::run_repl(&mut assembly, run_log).await?;
             std::process::exit(0);
         }
     }

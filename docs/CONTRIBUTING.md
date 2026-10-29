@@ -252,6 +252,20 @@ middleware_is_wired_into_the_agent，撤掉修复即失败。
 
 ### 6.1 日志
 
+运行时**自动**留档（`crates/mrorcode-cli/src/runlog.rs`），排查用户现场问题不用再手工转录：
+
+```powershell
+# 最新一份运行日志（每次启动一个文件，保留最近 20 份）
+Get-ChildItem $env:USERPROFILE\.mrorcode\logs | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+```
+
+- 同一文件里既有会话转录（`>>>` 用户输入、`●`/`└` 工具卡、`assistant:` 正文、`[error ...]`），
+  也有 `tracing` 诊断行；时间戳统一 UTC。
+- 默认脱敏：密钥类键值/头与裸密钥前缀打码，工具输出只留摘要。
+- `MRORCODE_LOG=0` 关闭；`MRORCODE_LOG_DIR` 改目录；`MRORCODE_LOG_LEVEL=info` 降文件层噪声（默认 `debug`）。
+
+stderr 上的实时诊断仍由 `RUST_LOG` 控制，不影响 headless 的 stdout 契约：
+
 ```powershell
 # 开启 debug 日志
 $env:RUST_LOG = "debug"
@@ -260,8 +274,6 @@ cargo run -- run "hi"
 # 只看某个 crate
 $env:RUST_LOG = "mrorcode_kernel=debug,mrorcode_capabilities=info"
 ```
-
-日志输出到 stderr，不影响 headless 的 stdout 输出。
 
 ### 6.2 无 API 调试
 

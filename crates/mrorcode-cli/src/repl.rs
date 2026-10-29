@@ -28,6 +28,8 @@ use serde_json::{json, Value};
 use mrorcode_agent::{Assembly, PermissionMode, RuntimeEvent};
 use mrorcode_kernel::event::AgentEvent;
 
+use crate::runlog::RunLog;
+
 /// REPL 复用同一个会话 id，使多轮 prompt 共享上下文（对应原 TUI 单会话）。
 const REPL_SESSION: u64 = 1;
 
@@ -127,7 +129,7 @@ impl Validator for ReplHelper {}
 impl Helper for ReplHelper {}
 
 /// 启动裸 ANSI REPL，直到用户退出。
-pub async fn run_repl(assembly: &mut Assembly) -> anyhow::Result<()> {
+pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::Result<()> {
     let history_path = history_path();
     let (req_tx, req_rx) = std_mpsc::channel::<ReplRequest>();
     let (out_tx, out_rx) = std_mpsc::channel::<ReplOutcome>();
@@ -226,11 +228,17 @@ pub async fn run_repl(assembly: &mut Assembly) -> anyhow::Result<()> {
         }
         // 斜杠命令：命中即处理，不发给模型。
         if let Some(body) = trimmed.strip_prefix('/') {
+            if let Some(log) = &log {
+                log.slash(body);
+            }
             if run_slash(body, assembly, &mut out, &mut mode)? {
                 let _ = writeln!(out, "bye.");
                 break;
             }
             continue;
+        }
+        if let Some(log) = &log {
+            log.user(trimmed);
         }
         let _ = writeln!(out);
         assembly.handle.submit(REPL_SESSION, trimmed.to_string());
@@ -239,7 +247,15 @@ pub async fn run_repl(assembly: &mut Assembly) -> anyhow::Result<()> {
         while let Some(ev) = assembly.events.recv().await {
             match ev {
                 RuntimeEvent::Agent { event, .. } => {
-                    if handle_event(assembly, event, &req_tx, &out_rx, &mut out, &mut render)? {
+                    if handle_event(
+                        assembly,
+                        event,
+                        &req_tx,
+                        &out_rx,
+                        &mut out,
+                        &mut render,
+                        log.as_ref(),
+                    )? {
                         break;
                     }
                 }
@@ -248,6 +264,9 @@ pub async fn run_repl(assembly: &mut Assembly) -> anyhow::Result<()> {
         }
     }
 
+    if let Some(log) = &log {
+        log.flush_assistant();
+    }
     assembly.handle.shutdown();
     Ok(())
 }
@@ -323,7 +342,11 @@ fn handle_event(
     out_rx: &std_mpsc::Receiver<ReplOutcome>,
     out: &mut std::io::Stdout,
     render: &mut ReplRender,
+    log: Option<&RunLog>,
 ) -> anyhow::Result<bool> {
+    if let Some(log) = log {
+        log.event(&ev);
+    }
     match ev {
         AgentEvent::TextDelta(t) => render.text(out, &t),
         AgentEvent::Reasoning(_) => {}
@@ -421,7 +444,7 @@ fn handle_event(
         }
         AgentEvent::SubAgent { event, .. } => {
             // 子 agent 事件递归渲染（REPL 不嵌套审批，子请求不会出现）。
-            return handle_event(assembly, *event, req_tx, out_rx, out, render);
+            return handle_event(assembly, *event, req_tx, out_rx, out, render, log);
         }
         AgentEvent::TurnStarted | AgentEvent::Usage { .. } => {}
     }

@@ -115,6 +115,27 @@ env = { FOO = "bar" }
 启动时拉起子进程、`initialize` 协商版本、`tools/list` 动态注册为 `mcp__<server>__<tool>`；
 断连 fail-closed 并告警（调用返回 is_error）。MCP 工具默认 `Risky`（需审批），除非 server 声明只读。
 
+## 运行日志
+
+每次启动自动留一份运行日志，排障直接看它（路径固定，无需手动录屏）：
+
+```
+~/.mrorcode/logs/run-20261029-163045.log
+```
+
+- **内容**：用户输入（`>>>`）、工具卡（`●` / `└`）、助手正文（`assistant:`）、错误与用量，
+  以及 `tracing` 诊断行——同一文件按 UTC 时间戳排成「说了什么 → 调了什么工具 → 报了什么错」。
+- **脱敏（默认开启）**：`api_key` / `Authorization` / `Bearer` 与 `sk-` / `ark-` / `ghp_` 等
+  裸密钥一律打码；工具输出只记摘要（首个非空行 + 总行数），不落整段文件内容。
+- **滚动**：保留最近 20 份，启动时清理更早的。
+
+| 环境变量 | 作用 |
+|---|---|
+| `MRORCODE_LOG=0` | 关闭运行日志 |
+| `MRORCODE_LOG_DIR=<dir>` | 改日志目录 |
+| `MRORCODE_LOG_LEVEL=info` | 文件层级别（默认 `debug`） |
+| `RUST_LOG=...` | 只影响 stderr 的实时诊断 |
+
 ## 键位（默认）
 
 | 键 | 动作 |

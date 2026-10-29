@@ -69,6 +69,10 @@ cargo build --release                           # -> target/release/mrorcode.exe
 - **Testkit**: `mrorcode-kernel`'s `test-support` feature exposes `ScriptedProvider`/`EchoTool`
   plus the `stream_signature`/`assert_stream_sequence`/`assert_event_sequence` conformance
   asserters; the crates' dev-dependencies already enable it.
+- **运行日志默认落盘**: `~/.mrorcode/logs/run-<UTC时间戳>.log`（`crates/mrorcode-cli/src/runlog.rs`）：
+  会话转录 + `tracing` 诊断同文件、保留最近 20 份、默认脱敏（密钥打码、工具输出只留摘要）。
+  `MRORCODE_LOG=0` 关闭，`MRORCODE_LOG_DIR`/`MRORCODE_LOG_LEVEL` 可调。新增日志内容一律走
+  `RunLog`（自动加时间戳与脱敏），**不要**另开文件或直接 `File::create` 写日志。
 - **Headless JSONL is a frozen contract**: `crates/mrorcode-cli/src/headless.rs` is the single
   source of truth (`SCHEMA_VERSION = 1`). Every line carries `v` + `type`; `run.finished` is always
   last in `--json` mode. `error` is a diagnostic, not terminal — only `turn.completed` is. The

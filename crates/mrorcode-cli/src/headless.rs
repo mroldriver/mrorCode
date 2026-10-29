@@ -26,6 +26,8 @@ use serde_json::{json, Value};
 use mrorcode_agent::{Assembly, RuntimeEvent};
 use mrorcode_kernel::event::{AgentEvent, StopReason};
 
+use crate::runlog::RunLog;
+
 /// headless 使用固定会话 id（无交互，单任务单会话）。
 pub const HEADLESS_SESSION: u64 = 1;
 
@@ -148,9 +150,21 @@ fn with_version(body: Value) -> Value {
 }
 
 /// 运行一个 prompt 直到终态，输出到 stdout，返回进程退出码（0 成功）。
-pub async fn run_headless(assembly: &mut Assembly, prompt: &str, json_mode: bool) -> i32 {
+pub async fn run_headless(
+    assembly: &mut Assembly,
+    prompt: &str,
+    json_mode: bool,
+    log: Option<&RunLog>,
+) -> i32 {
     let mut out = std::io::stdout();
-    run_headless_to(assembly, prompt, Mode::from_json_flag(json_mode), &mut out).await
+    run_headless_to_logged(
+        assembly,
+        prompt,
+        Mode::from_json_flag(json_mode),
+        &mut out,
+        log,
+    )
+    .await
 }
 
 /// [`run_headless`] 的可注入 sink 版本（测试用 `&mut Vec<u8>` 收 JSONL）。
@@ -160,19 +174,36 @@ pub async fn run_headless_to<W: Write>(
     mode: Mode,
     out: &mut W,
 ) -> i32 {
+    run_headless_to_logged(assembly, prompt, mode, out, None).await
+}
+
+/// 同 [`run_headless_to`]，额外把事件转录进运行日志。
+pub async fn run_headless_to_logged<W: Write>(
+    assembly: &mut Assembly,
+    prompt: &str,
+    mode: Mode,
+    out: &mut W,
+    log: Option<&RunLog>,
+) -> i32 {
+    if let Some(log) = log {
+        log.user(prompt);
+    }
     assembly.handle.submit(HEADLESS_SESSION, prompt.to_string());
 
     let mut stop_ok = false;
     while let Some(ev) = assembly.events.recv().await {
         match ev {
             RuntimeEvent::Agent { event: ev, .. } => {
-                if let Some(success) = handle_agent_event(assembly, ev, mode, out) {
+                if let Some(success) = handle_agent_event(assembly, ev, mode, out, log) {
                     stop_ok = success;
                     break;
                 }
             }
             RuntimeEvent::Exited => break,
         }
+    }
+    if let Some(log) = log {
+        log.flush_assistant();
     }
     if mode.is_json() {
         let _ = writeln!(out, "{}", run_finished_line(stop_ok));
@@ -186,7 +217,11 @@ fn handle_agent_event<W: Write>(
     ev: AgentEvent,
     mode: Mode,
     out: &mut W,
+    log: Option<&RunLog>,
 ) -> Option<bool> {
+    if let Some(log) = log {
+        log.event(&ev);
+    }
     if mode.is_json() {
         if let Some(line) = event_line(&ev) {
             let _ = writeln!(out, "{line}");
