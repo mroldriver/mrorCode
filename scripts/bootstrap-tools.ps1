@@ -29,8 +29,11 @@ $MingwDir  = Join-Path $ToolsDir 'mingw'   # 解压后 bin 位于 $MingwDir\bin
 $BinDir    = Join-Path $MingwDir 'bin'
 $Dlltool   = Join-Path $BinDir 'dlltool.exe'
 $As        = Join-Path $BinDir 'as.exe'
+# dlltool/ld/rustc 的临时文件统一落到项目内，不依赖系统 %TEMP%
+# （企业沙箱/杀软收紧 Temp 权限时会报 Permission denied）。
+$TmpDir    = Join-Path $ToolsDir 'tmp'
 
-New-Item -ItemType Directory -Force -Path $PkgDir, $MingwDir | Out-Null
+New-Item -ItemType Directory -Force -Path $PkgDir, $MingwDir, $TmpDir | Out-Null
 
 # 每个包幂等处理：缺则下载，每次运行都重新解压（tar 覆盖，安全可重入）
 foreach ($pkg in $Packages) {
@@ -55,11 +58,29 @@ $CargoDir = Join-Path $Root '.cargo'
 New-Item -ItemType Directory -Force -Path $CargoDir | Out-Null
 $ConfigPath = Join-Path $CargoDir 'config.toml'
 $DlltoolEsc = $Dlltool -replace '\\', '\\'
+$TmpRel = '.tools/tmp'
 @"
 # 由 scripts/bootstrap-tools.ps1 生成：指向项目本地完整 binutils
 [target.x86_64-pc-windows-gnu]
 rustflags = ["-C", "dlltool=$DlltoolEsc"]
+
+# dlltool/ld 的临时文件重定向到项目内，摆脱系统 %TEMP% 权限依赖。
+[env]
+TMPDIR = { value = "$TmpRel", relative = true, force = true }
+TEMP   = { value = "$TmpRel", relative = true, force = true }
+TMP    = { value = "$TmpRel", relative = true, force = true }
 "@ | Set-Content -Encoding UTF8 $ConfigPath
 
 Write-Host "bootstrap done: $Dlltool"
 Write-Host "config written: $ConfigPath"
+
+# 自检：真跑一次链接（kernel 是最轻的底层 crate），确认 dlltool/as 真能工作。
+Write-Host "running cargo check -p mrorcode-kernel (sanity)..."
+Push-Location $Root
+try {
+    cargo check -p mrorcode-kernel
+    if ($LASTEXITCODE -ne 0) { throw "cargo check -p mrorcode-kernel failed (exit $LASTEXITCODE)" }
+} finally {
+    Pop-Location
+}
+Write-Host "bootstrap sanity check OK."
