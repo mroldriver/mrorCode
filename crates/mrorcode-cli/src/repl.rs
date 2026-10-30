@@ -614,26 +614,26 @@ fn run_slash(
                 out,
                 "{}   {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
                 bold(&cyan("/help")),
-                dim("show this help"),
+                dim("显示本帮助"),
                 bold(&cyan("/model [name]")),
-                dim("show or switch model"),
+                dim("查看或切换模型"),
                 bold(&cyan("/mode [ro|rw|full]")),
-                dim("show or set permission mode (no arg = cycle)"),
+                dim("查看或设置权限模式（不带参数则循环切换）"),
                 bold(&cyan("/interrupt")),
-                dim("cancel the running turn"),
+                dim("取消当前进行中的回合"),
                 bold(&cyan("/full")),
-                dim("replay the full text of the last turn (when folded)"),
+                dim("重新输出上一回合全文（内容被折叠时）"),
                 bold(&cyan("/exit, /quit")),
-                dim("quit"),
+                dim("退出"),
             );
         }
         "model" | "m" => {
             if arg.is_empty() {
-                let _ = writeln!(out, "{} {}", dim("model:"), bold(&assembly.model));
+                let _ = writeln!(out, "{} {}", dim("模型："), bold(&assembly.model));
             } else {
                 assembly.handle.set_model(arg);
                 assembly.model = arg.to_string();
-                let _ = writeln!(out, "{} {}", dim("model →"), bold(arg));
+                let _ = writeln!(out, "{} {}", dim("模型 →"), bold(arg));
             }
         }
         "mode" => {
@@ -651,7 +651,7 @@ fn run_slash(
                     "full" | "all" | "yolo" => *mode = PermissionMode::Full,
                     _ => {
                         let _ =
-                            writeln!(out, "{} `{arg}` (use ro | rw | full)", red("unknown mode:"));
+                            writeln!(out, "{} `{arg}` （可用 ro | rw | full）", red("未知权限模式："));
                         return Ok(false);
                     }
                 }
@@ -660,7 +660,7 @@ fn run_slash(
             let _ = writeln!(
                 out,
                 "{} {}",
-                dim("mode →"),
+                dim("权限 →"),
                 mode_color(*mode, mode_name(*mode))
             );
         }
@@ -670,15 +670,15 @@ fn run_slash(
         }
         "full" => {
             if !render.replay_last_turn(out) {
-                let _ = writeln!(out, "{}", dim("(没有可展开的内容)"));
+                let _ = writeln!(out, "{}", dim("（没有可展开的内容）"));
             }
         }
         other => {
             let _ = writeln!(
                 out,
                 "{} `/{other}` {}",
-                red("unknown command:"),
-                dim("(/help for list)")
+                red("未知命令："),
+                dim("（输入 /help 查看列表）")
             );
         }
     }
