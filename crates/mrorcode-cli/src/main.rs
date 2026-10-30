@@ -4,14 +4,31 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
 use mrorcode_agent::AssembleOptions;
 use mrorcode_cli::runlog::RunLog;
 use mrorcode_cli::{headless, repl};
 use mrorcode_config::Config;
 
+// clap 内置的 `Usage:`/`Commands:`/`Options:` 是英文常量，没有公开的改文案接口；
+// 而 `{subcommands}`/`{options}` 只渲染条目、不带标题，所以标题由模板自己给。
+/// 顶层帮助模板。
+const HELP_TEMPLATE: &str =
+    "{about-with-newline}\n用法：{usage}\n\n命令：\n{subcommands}\n\n选项：\n{options}";
+/// 子命令帮助模板（没有子命令段，位置参数称「参数」）。
+const RUN_HELP_TEMPLATE: &str =
+    "{about-with-newline}\n用法：{usage}\n\n参数：\n{positionals}\n\n选项：\n{options}";
+
 #[derive(Parser, Debug)]
-#[command(name = "mrorcode", version, about = "A fast terminal AI coding agent")]
+#[command(
+    name = "mrorcode",
+    version,
+    about = "快速终端 AI 编码助手",
+    help_template = HELP_TEMPLATE,
+    disable_help_flag = true,
+    disable_version_flag = true,
+    disable_help_subcommand = true
+)]
 struct Cli {
     /// 子命令；缺省进入裸 ANSI REPL。
     #[command(subcommand)]
@@ -38,12 +55,38 @@ struct CommonArgs {
     /// 跳过所有工具审批（仅限可信的自动化场景）。
     #[arg(long = "dangerously-skip-permissions", global = true)]
     skip_permissions: bool,
+
+    // 内置 `-h/-V` 被禁用后手工补回，只为让说明文字是中文；
+    // 两者在解析阶段由 clap 直接打印并退出，字段本身不会读到。
+    #[arg(
+        short = 'h',
+        long = "help",
+        action = ArgAction::Help,
+        global = true,
+        help = "显示帮助"
+    )]
+    #[allow(dead_code)]
+    help: Option<bool>,
+
+    // `-V` 只留在顶层：子命令没有 version，`ArgAction::Version` 传播过去会触发 clap 调试断言。
+    #[arg(
+        short = 'V',
+        long = "version",
+        action = ArgAction::Version,
+        help = "显示版本"
+    )]
+    #[allow(dead_code)]
+    version: Option<bool>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// 一次性任务（无交互）。
+    #[command(help_template = RUN_HELP_TEMPLATE)]
     Run(RunArgs),
+
+    /// 显示帮助信息。
+    Help,
 }
 
 #[derive(Args, Debug)]
@@ -78,7 +121,7 @@ async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
 
     let mut loaded = Config::load();
     for w in loaded.warnings.drain(..) {
-        eprintln!("config warning: {w}");
+        eprintln!("配置警告：{w}");
     }
     if let Some(model) = cli.common.model {
         loaded.config.default_model = Some(model);
@@ -88,6 +131,11 @@ async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Some(Commands::Help) => {
+            Cli::command().print_help()?;
+            println!();
+            std::process::exit(0);
+        }
         Some(Commands::Run(run)) => {
             let resolved = match loaded.config.resolve() {
                 Ok(r) => r,
@@ -95,7 +143,7 @@ async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
                     eprintln!("{e}");
                     eprintln!();
                     eprintln!(
-                        "example config (~/.mrorcode/config.toml):\n\
+                        "示例配置（~/.mrorcode/config.toml）：\n\
                          \n\
                          default_model = \"your-model\"\n\
                          \n\
@@ -122,7 +170,7 @@ async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
             )
             .await?;
             for w in &assembly.warnings {
-                eprintln!("mcp warning: {w}");
+                eprintln!("MCP 警告：{w}");
             }
             let code =
                 headless::run_headless(&mut assembly, &run.prompt, run.json, run_log.as_ref())
@@ -138,7 +186,7 @@ async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
             let mut assembly = mrorcode_agent::assemble(
                 &loaded.config.resolve().map_err(|e| {
                     eprintln!("{e}");
-                    anyhow::anyhow!("provider not configured")
+                    anyhow::anyhow!("未配置 provider")
                 })?,
                 working_dir,
                 &options,
@@ -147,7 +195,7 @@ async fn async_main(cli: Cli, run_log: Option<RunLog>) -> anyhow::Result<()> {
             )
             .await?;
             for w in &assembly.warnings {
-                eprintln!("mcp warning: {w}");
+                eprintln!("MCP 警告：{w}");
             }
             repl::run_repl(&mut assembly, run_log).await?;
             std::process::exit(0);

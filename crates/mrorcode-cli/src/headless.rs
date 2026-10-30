@@ -305,7 +305,7 @@ fn render_plain<W: Write>(ev: &AgentEvent, out: &mut W) {
             let _ = writeln!(w);
         }
         AgentEvent::Error { message, .. } => {
-            eprintln!("error: {message}");
+            eprintln!("错误：{message}");
         }
         AgentEvent::Cancelled => {
             eprintln!("cancelled");
