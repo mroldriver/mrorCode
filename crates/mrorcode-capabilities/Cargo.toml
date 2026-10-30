@@ -19,7 +19,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
-bytes = { workspace = true }
 async-stream = { workspace = true }
 encoding_rs = { workspace = true }
 similar = { workspace = true }

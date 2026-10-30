@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/mrorcode-cli"]
 
 [workspace.package]
-version = "0.6.14"
+version = "0.6.15"
 edition = "2021"
 license = "MIT"
 description = "A fast terminal AI coding agent"
@@ -49,7 +49,7 @@ mrorcode-agent = { path = "crates/mrorcode-agent" }
 mrorcode-config = { path = "crates/mrorcode-config" }
 
 # 异步/序列化基线
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 futures = "0.3"
 async-trait = "0.1"
@@ -62,8 +62,7 @@ tracing = "0.1"
 # HTTP / SSE
 # TLS：使用 native-tls（Windows=SChannel / macOS=Security.framework），
 # 纯 Rust 系统绑定，无需 C 编译器；避免 rustls 的 ring/aws-lc 本地构建依赖。
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "stream", "json", "charset", "http2"] }
-bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "stream", "json", "charset"] }
 async-stream = "0.3"
 encoding_rs = "0.8"
 
@@ -81,8 +80,8 @@ rustyline = { version = "15", features = ["with-file-history"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 
 # 开发
-criterion = "0.5"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 wiremock = "0.6"

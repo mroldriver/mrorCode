@@ -10,16 +10,13 @@ mrorcode-kernel = { workspace = true }
 mrorcode-capabilities = { workspace = true }
 mrorcode-config = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-futures = { workspace = true }
-async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 mrorcode-kernel = { workspace = true, features = ["test-support"] }
+async-trait = { workspace = true }

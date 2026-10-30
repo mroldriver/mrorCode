@@ -66,6 +66,86 @@ cargo build --release                           # -> target/release/mrorcode.exe
   `bin/rust-lld.exe` 虽在，但默认链接不走 lld。`.tools/mingw` 那套 binutils 只为
   `dlltool` 服务（见 Gotchas），与链接驱动无关。
 
+## Dependencies
+
+依赖只有四类来源：内部 path crate（5 个）、根 `Cargo.toml` 的 `[workspace.dependencies]`（22 个外部
+直接依赖）、`Cargo.lock`、实际编译图。数字会随依赖变动，复算命令：
+
+```bash
+grep -c '^\[\[package\]\]' Cargo.lock                                   # 锁文件包数
+cargo tree -p mrorcode-cli --edges normal,build --prefix none | sed 's/ (\*)//' | sort -u | wc -l
+```
+
+2026-10-30 实测（v0.6.15 依赖瘦身后）：
+
+| 口径 | 包数 | 说明 |
+| --- | --- | --- |
+| `Cargo.lock` | 255 | 250 第三方 + 5 内部 crate |
+| release 编译图（`mrorcode-cli`） | 175 | 170 第三方 + 5 内部；workspace 内**没有** `[build-dependencies]` |
+| 外部直接依赖 | 22 | 全部在根 `Cargo.toml` 声明，crate 只写 `{ workspace = true }` |
+
+瘦身前后（v0.6.14 → v0.6.15，issue #19）：锁文件 270→255、release 图 179→175、二进制
+5,933,056→5,355,520 B（**−9.7%**）。去掉的是未使用的直接依赖（`bytes`/`serde`/`futures`/
+`reqwest`/`tokio-util` 等）与可选 feature（`http2`、`tokio/fs`、`tracing-subscriber` 默认、`criterion` 默认）。
+
+### 外部直接依赖（22 个）
+
+| 分类 | crate | 版本 | 关键 features / 用途 |
+| --- | --- | --- | --- |
+| 异步基线 | `tokio` | 1 | rt/rt-multi-thread/macros/sync/time/process/io-util（**无 `fs`**，`tokio::fs` 零使用） |
+| | `tokio-util` | 0.7 | `rt`（CancellationToken） |
+| | `futures` | 0.3 | Stream/组合子 |
+| | `async-trait` | 0.1 | provider/tool trait |
+| 序列化/错误 | `serde` / `serde_json` | 1 | `derive` |
+| | `anyhow` / `thiserror` | 1 / 2 | 应用层 / 库层错误 |
+| | `tracing` | 0.1 | 诊断（走 `RunLog`） |
+| HTTP/SSE | `reqwest` | 0.12 | **`default-features = false`**，只开 native-tls/stream/json/charset（**无 `http2`**，只走 HTTP/1.1，避免 `h2`） |
+| | `async-stream` | 0.3 | 流式适配 |
+| | `encoding_rs` | 0.8 | charset 解码 |
+| 配置 | `toml` | 0.8 | `~/.mrorcode/config.toml` |
+| | `dirs` | 5 | 家目录定位 |
+| 编辑/搜索 | `similar` | 2 | `text`（diff） |
+| | `ignore` | 0.4 | 目录遍历（gitignore 感知） |
+| | `regex` | 1 | grep 工具 |
+| CLI | `rustyline` | 15 | `with-file-history`（裸 ANSI REPL 行编辑） |
+| | `clap` | 4 | `derive` |
+| | `tracing-subscriber` | 0.3 | **`default-features = false`** + `fmt`/`env-filter`/`std`（去掉 ansi 与 tracing-log） |
+| 开发专用 | `criterion` | 0.5 | **`default-features = false`** + `cargo_bench_support`（bench 不画图，去掉 plotters/rayon）：`kernel` 的 `compaction`、`capabilities` 的 `search`（`harness = false`） |
+| | `wiremock` | 0.6 | provider 本地 mock HTTP |
+
+### 逐 crate 直接依赖
+
+| crate | 依赖 |
+| --- | --- |
+| `mrorcode-kernel` | tokio, tokio-util, futures, async-trait, serde, serde_json, thiserror, tracing；feature `test-support`（默认关，暴露 `ScriptedProvider`/`EchoTool` 与流断言器）；dev: criterion |
+| `mrorcode-config` | serde, toml, dirs, thiserror（叶子 crate，不依赖其他内部 crate） |
+| `mrorcode-capabilities` | kernel, config, tokio, tokio-util, futures, async-trait, serde, serde_json, anyhow, thiserror, tracing, dirs, reqwest, async-stream, encoding_rs, similar, ignore, regex；dev: wiremock, criterion |
+| `mrorcode-agent` | kernel, capabilities, config, tokio, serde, serde_json, anyhow, thiserror, tracing；dev: tokio, kernel(`test-support`), async-trait（仅 `tests/runtime.rs` 的注入 provider 用） |
+| `mrorcode-cli` | kernel, capabilities, agent, config, tokio, anyhow, serde_json, clap, tracing, tracing-subscriber, rustyline, dirs, regex |
+
+### 不变量
+
+- **纯 Rust / 无 C 工具链**：运行时依赖全部满足。`similar`/`ignore`/`regex`/`rustyline`/`encoding_rs`
+  都是特意挑的纯 Rust 实现；这是硬约束，不是偏好（见 Gotchas 的 TLS 条目）。
+- **TLS 固定 native-tls**：Windows 走 `schannel`，只有 Linux 目标才会拉 `openssl-sys`
+  （`cargo tree --target all -i openssl-sys` 可见）。0.6.15 瘦身后 `rustls`/`ring`/`hyper-rustls`/
+  `tokio-rustls` 已**完全不在 `Cargo.lock`** 里；不要为了省事换成 rustls/mimalloc（要 C 工具链）。
+- **HTTP/1.1 only**：`reqwest` 没开 `http2`，`h2` 不在依赖图里。provider 的 JSON/SSE 都跑在
+  HTTP/1.1 上；若将来确有 HTTP/2 需求，先量化 `h2` 的体积代价再开，不要顺手加回 feature。
+- **`log` 由 `ignore` 引入**：`tracing-subscriber` 已关掉 `tracing-log`，但 `ignore` 自身依赖
+  `log`，所以 `log` 仍在图里——这是正常的，不是残留。
+- **dev-only 不进二进制**：`criterion`、`wiremock` 只出现在测试/基准；release 图不含它们。
+- **MSRV 1.88**：新依赖的 `rust-version` 必须 ≤ 1.88，且不得引入 C 构建脚本依赖。
+- **体积**：release 约 5.4 MB（5,355,520 B；`lto = "thin"` + `codegen-units = 1` + `strip` +
+  `panic = "abort"`）。新增重依赖前先量化体积与冷编译时间的代价（见 Build speed）。
+
+### 新增/升级依赖的规矩
+
+1. 纯 Rust 优先；必须引 C 构建的，先在本文件说明理由（现有唯一例外是 native-tls 背后的系统 TLS 绑定）。
+2. 版本只改根 `Cargo.toml` 的 `[workspace.dependencies]`，**不要**在 crate 里写死版本号。
+3. feature 最小化，参照 `reqwest`（`default-features = false` + 显式清单）。
+4. 改完用上面的命令复算并更新本节数字；新增依赖属代码改动，按 Versioning 规则 bump 版本。
+
 ## Architecture rules
 
 - The kernel runtime is the sole owner of agent/conversation state. The REPL
