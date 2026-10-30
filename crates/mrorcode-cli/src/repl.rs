@@ -288,7 +288,15 @@ struct ReplRender {
     /// 本轮已流式写出的正文（用于长回复折叠与 `/full` 重放）。
     turn_text: String,
     /// 本轮已实时写出的行数（折叠阈值判断）。
-    emitted_newlines: usize,
+    emitted_lines: usize,
+    /// 尚未成行的正文：块级标记要等整行，行内标记要等配对，跨 delta 留在这里。
+    line_buf: String,
+    /// 是否处于围栏代码块内（块内不解析行内标记）。
+    in_fence: bool,
+    /// 行内样式的跨 delta 状态（粗体/斜体/行内代码/删除线）。
+    inline: Inline,
+    /// 是否启用 Markdown 渲染；`MRORCODE_REPL_MARKDOWN=0` 可回退为原样输出。
+    markdown: bool,
     /// 已超过阈值：后续正文只累积不输出。
     folded: bool,
     /// 上一轮的完整正文；`/full` 重放它。
@@ -321,6 +329,338 @@ fn take_lines(s: &str, max_newlines: usize) -> (&str, bool) {
     (s, false)
 }
 
+// ---- Markdown 行级渲染（阶段一：行内样式 + 常见块级前缀） -------------------
+//
+// 只做「去掉语法噪声 + 适度着色」，不追求完整 CommonMark：
+// - 不支持 `_` 强调（会误伤 `snake_case` 标识符），也不做表格对齐（需要终端宽度）。
+// - 围栏内原样保留，避免把代码里的 `*`、`#`、反引号当标记。
+
+/// 行首形态判定结果。
+enum LineKind {
+    /// 还看不出来（标记可能没写完，或块级行还没等到换行）。
+    NeedMore,
+    /// 纯 `...` 过渡行，整行丢弃。
+    Skip,
+    /// 围栏代码块的开/闭行。
+    Fence,
+    /// 标题/列表/引用/分隔线：需要整行才能渲染。
+    Block,
+    /// 普通行：可以流式做行内渲染。
+    Plain,
+}
+
+/// 判断一行（可能是半行）该怎么渲染。
+fn classify_line(buf: &str) -> LineKind {
+    let body = buf.trim_end_matches('\n').trim_end_matches('\r');
+    let trimmed = body.trim_start_matches([' ', '\t']);
+    let complete = buf.contains('\n');
+    if trimmed == "..." || trimmed == "…" {
+        return if complete {
+            LineKind::Skip
+        } else {
+            LineKind::NeedMore
+        };
+    }
+    if trimmed.is_empty() {
+        return if complete {
+            LineKind::Plain
+        } else {
+            LineKind::NeedMore
+        };
+    }
+    if trimmed.starts_with("```") {
+        return LineKind::Fence;
+    }
+    if !complete && "```".starts_with(trimmed) {
+        return LineKind::NeedMore;
+    }
+    if starts_block(trimmed) {
+        return if complete {
+            LineKind::Block
+        } else {
+            LineKind::NeedMore
+        };
+    }
+    LineKind::Plain
+}
+
+/// 是否是块级前缀（标题/列表/引用/分隔线）。
+fn starts_block(s: &str) -> bool {
+    if heading_level(s).is_some() {
+        return true;
+    }
+    if s.starts_with('>') {
+        return true;
+    }
+    if rule_marker(s) {
+        return true;
+    }
+    let Some(first) = s.chars().next() else {
+        return false;
+    };
+    if matches!(first, '-' | '*' | '+') {
+        return s
+            .chars()
+            .nth(1)
+            .map(|c| c == ' ' || c == '\n')
+            .unwrap_or(true);
+    }
+    if first.is_ascii_digit() {
+        let digits = s.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits <= 9 {
+            if let Some('.') = s.chars().nth(digits) {
+                return s
+                    .chars()
+                    .nth(digits + 1)
+                    .map(|c| c == ' ' || c == '\n')
+                    .unwrap_or(true);
+            }
+        }
+    }
+    false
+}
+
+/// `#` ~ `######` + 空格（或行尾）才算标题；`#######` 或 `#tag` 不算。
+fn heading_level(s: &str) -> Option<usize> {
+    let n = s.chars().take_while(|c| *c == '#').count();
+    if (1..=6).contains(&n) && s.chars().nth(n).map(|c| c == ' ').unwrap_or(true) {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+/// 整行只有 `-`/`*`/`_`（可混空格）且至少三个，是分隔线。
+fn rule_marker(s: &str) -> bool {
+    let mut count = 0;
+    for c in s.chars() {
+        match c {
+            '-' | '*' | '_' => count += 1,
+            ' ' | '\t' | '\n' | '\r' => {}
+            _ => return false,
+        }
+    }
+    count >= 3
+}
+
+/// 渲染一个完整的块级行（行尾换行保留）。
+fn render_block_line(line: &str) -> String {
+    let body = line.trim_end_matches('\n').trim_end_matches('\r');
+    let indent_len = body.len() - body.trim_start_matches([' ', '\t']).len();
+    let (indent, s) = body.split_at(indent_len);
+    if let Some(level) = heading_level(s) {
+        let text = s[level..].trim_start();
+        return format!("{indent}{}\n", bold(&cyan(text)));
+    }
+    if rule_marker(s) {
+        return format!("{indent}{}\n", dim(&"─".repeat(40)));
+    }
+    if let Some(rest) = s.strip_prefix('>') {
+        return format!(
+            "{indent}{} {}\n",
+            dim("│"),
+            dim(&render_inline(rest.trim_start()))
+        );
+    }
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = s.strip_prefix(marker) {
+            return format!("{indent}• {}\n", render_inline(rest));
+        }
+    }
+    // 有序列表等：保留原前缀，只做行内渲染。
+    format!("{indent}{}\n", render_inline(s))
+}
+
+/// 把整段 Markdown 渲染成文本（`/full` 重放与折叠计数共用）。
+fn render_text(text: &str, markdown: bool) -> String {
+    if !markdown {
+        let mut s = text.to_string();
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+        return s;
+    }
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches('\n').trim_end_matches('\r');
+        let trimmed = body.trim_start_matches([' ', '\t']);
+        if in_fence {
+            if trimmed.starts_with("```") {
+                in_fence = false;
+                continue;
+            }
+            if body.is_empty() {
+                out.push('\n');
+            } else {
+                out.push_str("  ");
+                out.push_str(&dim(body));
+                out.push('\n');
+            }
+            continue;
+        }
+        if trimmed == "..." || trimmed == "…" {
+            continue;
+        }
+        if trimmed.starts_with("```") {
+            in_fence = true;
+            let lang = trimmed.trim_start_matches('`').trim();
+            if !lang.is_empty() {
+                out.push_str("  ");
+                out.push_str(&dim(lang));
+                out.push('\n');
+            }
+            continue;
+        }
+        if starts_block(trimmed) {
+            out.push_str(&render_block_line(line));
+        } else {
+            out.push_str(&render_inline(body));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// 行内渲染（无跨行状态）：粗体、斜体、行内代码、删除线、链接。
+fn render_inline(s: &str) -> String {
+    let mut state = Inline::default();
+    let mut out = String::new();
+    state.feed(s, &mut out);
+    state.close(&mut out);
+    out
+}
+
+/// 行内样式的跨 delta 状态机：标记成对出现就切换样式，行尾统一收尾。
+#[derive(Default)]
+struct Inline {
+    bold: bool,
+    italic: bool,
+    code: bool,
+    strike: bool,
+}
+
+impl Inline {
+    /// 消费一段文本：遇到标记切换样式，其余原样写出。
+    fn feed(&mut self, text: &str, out: &mut String) {
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '\n' => {
+                    self.close(out);
+                    out.push('\n');
+                    i += 1;
+                }
+                '`' => {
+                    self.code = !self.code;
+                    self.apply(out);
+                    i += 1;
+                }
+                '~' if chars.get(i + 1) == Some(&'~') => {
+                    self.strike = !self.strike;
+                    self.apply(out);
+                    i += 2;
+                }
+                '*' if chars.get(i + 1) == Some(&'*') => {
+                    self.bold = !self.bold;
+                    self.apply(out);
+                    i += 2;
+                }
+                '*' => {
+                    self.italic = !self.italic;
+                    self.apply(out);
+                    i += 1;
+                }
+                '[' => match find_link(&chars, i) {
+                    Some((label_end, url_end)) => {
+                        let label: String = chars[i + 1..label_end].iter().collect();
+                        let url: String = chars[label_end + 2..url_end].iter().collect();
+                        out.push_str(&render_inline(&label));
+                        out.push_str(&dim(&format!(" ({url})")));
+                        i = url_end + 1;
+                    }
+                    None => {
+                        out.push('[');
+                        i += 1;
+                    }
+                },
+                c => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// 行尾/段落尾收尾：把还开着的样式复位，避免污染后续输出。
+    fn close(&mut self, out: &mut String) {
+        if (self.bold || self.italic || self.code || self.strike) && color_enabled() {
+            out.push_str("\x1b[0m");
+        }
+        self.bold = false;
+        self.italic = false;
+        self.code = false;
+        self.strike = false;
+    }
+
+    /// 按当前状态重设 SGR（先全清再叠加，避免样式残留）。
+    fn apply(&self, out: &mut String) {
+        if !color_enabled() {
+            return;
+        }
+        out.push_str("\x1b[0m");
+        if self.bold {
+            out.push_str("\x1b[1m");
+        }
+        if self.italic {
+            out.push_str("\x1b[3m");
+        }
+        if self.strike {
+            out.push_str("\x1b[2m");
+        }
+        if self.code {
+            out.push_str("\x1b[36m");
+        }
+    }
+}
+
+/// 从 `[` 开始找 `[文本](url)`，返回（`]` 下标，`)` 下标）。
+fn find_link(chars: &[char], start: usize) -> Option<(usize, usize)> {
+    let mut i = start + 1;
+    while i < chars.len() && chars[i] != ']' && chars[i] != '\n' {
+        i += 1;
+    }
+    if i >= chars.len() || chars[i] != ']' {
+        return None;
+    }
+    let label_end = i;
+    if chars.get(label_end + 1) != Some(&'(') {
+        return None;
+    }
+    let mut j = label_end + 2;
+    while j < chars.len() && chars[j] != ')' && chars[j] != '\n' {
+        j += 1;
+    }
+    if j >= chars.len() || chars[j] != ')' {
+        return None;
+    }
+    Some((label_end, j))
+}
+
+/// 缓冲区尾部可能还没写完的标记长度：留着等下一个 delta，避免吐出半截标记。
+fn trailing_marker_len(s: &str) -> usize {
+    let tail: Vec<char> = s.chars().rev().take(3).collect();
+    let run = tail.iter().take_while(|c| **c == '*' || **c == '~').count();
+    if run > 0 {
+        return run;
+    }
+    match tail.first() {
+        Some('`') | Some('[') => 1,
+        _ => 0,
+    }
+}
+
 impl ReplRender {
     fn new() -> Self {
         let preview_lines = std::env::var("MRORCODE_REPL_PREVIEW_LINES")
@@ -333,45 +673,212 @@ impl ReplRender {
             blank_emitted: false,
             pending: HashMap::new(),
             turn_text: String::new(),
-            emitted_newlines: 0,
+            emitted_lines: 0,
+            line_buf: String::new(),
+            in_fence: false,
+            inline: Inline::default(),
+            markdown: std::env::var("MRORCODE_REPL_MARKDOWN")
+                .map(|v| v != "0")
+                .unwrap_or(true),
             folded: false,
             last_turn: None,
             preview_lines,
         }
     }
 
-    /// 流式正文：原样写出，并记录落点是否在行首。
-    /// 跳过 LLM 输出的纯 `...` 过渡行（如思考停顿的省略号）。
+    /// 流式正文：按行做 Markdown 渲染，并记录落点是否在行首。
     ///
+    /// 行首先判断块级形态（标题/列表/引用/围栏），判断不出来就等下一个 delta；
+    /// 普通行确定后按行内标记流式输出，只把可能没写完的标记尾巴留在缓冲里，
+    /// 所以不会出现「先吐出半个 `**`」。
     /// 超过折叠阈值后不再实时输出（issue #11 的 4-A）：文本继续累积，轮末给一行
-    /// 灰色提示，用户可以 `/full` 重放。短回复（大多数情况）行为完全不变。
-    /// 单个 delta 跨过阈值时按行切开——只写到阈值那一行，避免「一次给 100 行」时
-    /// 要么全丢、要么全放。
+    /// 灰色提示，用户可以 `/full` 重放。折叠按**渲染后的行数**计，与展示一致。
     fn text(&mut self, out: &mut dyn Write, t: &str) {
-        let trimmed = t.trim();
-        if trimmed == "..." || trimmed == "…" {
+        // 关闭渲染时保持旧行为：原样写出，仅做 `...` 过滤与折叠。
+        if !self.markdown {
+            let trimmed = t.trim();
+            if trimmed == "..." || trimmed == "…" {
+                return;
+            }
+            self.turn_text.push_str(t);
+            if self.folded {
+                return;
+            }
+            let budget = self.preview_lines.saturating_sub(self.emitted_lines);
+            let (head, truncated) = take_lines(t, budget);
+            if !head.is_empty() {
+                let _ = write!(out, "{head}");
+                let _ = out.flush();
+                self.blank_emitted = false;
+                if let Some(last) = head.chars().last() {
+                    self.at_line_start = last == '\n';
+                }
+            }
+            self.emitted_lines += head.matches('\n').count();
+            if truncated {
+                self.folded = true;
+                self.break_line(out);
+            }
             return;
         }
+
         self.turn_text.push_str(t);
         if self.folded {
             return;
         }
-        let budget = self.preview_lines.saturating_sub(self.emitted_newlines);
-        let (head, truncated) = take_lines(t, budget);
-        if !head.is_empty() {
-            let _ = write!(out, "{head}");
-            let _ = out.flush();
-            self.blank_emitted = false;
-            if let Some(last) = head.chars().last() {
-                self.at_line_start = last == '\n';
+        self.line_buf.push_str(t);
+        self.drain(out);
+    }
+
+    /// 把缓冲里已经能确定的内容渲染出去。
+    fn drain(&mut self, out: &mut dyn Write) {
+        loop {
+            // 折叠预算按行计：写满阈值后剩余正文只累积。
+            if self.at_line_start && self.emitted_lines >= self.preview_lines {
+                self.folded = true;
+                self.break_line(out);
+                return;
+            }
+            if self.in_fence {
+                if !self.drain_fence(out) {
+                    return;
+                }
+                continue;
+            }
+            if self.at_line_start {
+                match classify_line(&self.line_buf) {
+                    LineKind::NeedMore => return,
+                    // 纯省略号过渡行：整行丢掉。
+                    LineKind::Skip => {
+                        let Some(idx) = self.line_buf.find('\n') else {
+                            return;
+                        };
+                        self.line_buf.drain(..=idx);
+                        self.at_line_start = true;
+                        continue;
+                    }
+                    LineKind::Fence => {
+                        let Some(idx) = self.line_buf.find('\n') else {
+                            return;
+                        };
+                        let line: String = self.line_buf.drain(..=idx).collect();
+                        self.in_fence = true;
+                        // 语言标签保留（缩进 + dim），围栏本身不输出。
+                        let lang = line.trim().trim_start_matches('`').trim().to_string();
+                        if !lang.is_empty() {
+                            let s = format!("  {}\n", dim(&lang));
+                            self.emit(out, &s);
+                        }
+                        self.at_line_start = true;
+                        continue;
+                    }
+                    LineKind::Block => {
+                        let Some(idx) = self.line_buf.find('\n') else {
+                            return;
+                        };
+                        let line: String = self.line_buf.drain(..=idx).collect();
+                        let s = render_block_line(&line);
+                        self.emit(out, &s);
+                        self.at_line_start = true;
+                        continue;
+                    }
+                    LineKind::Plain => self.at_line_start = false,
+                }
+            }
+            // 普通行：流式输出，只留下可能没写完的标记尾巴。
+            let hold = trailing_marker_len(&self.line_buf);
+            let cut = self.line_buf.len().saturating_sub(hold);
+            if cut == 0 {
+                return;
+            }
+            let chunk: String = self.line_buf.drain(..cut).collect();
+            for part in chunk.split_inclusive('\n') {
+                if self.emitted_lines >= self.preview_lines {
+                    self.folded = true;
+                    self.break_line(out);
+                    return;
+                }
+                let mut rendered = String::new();
+                self.inline.feed(part, &mut rendered);
+                self.emit(out, &rendered);
+                if part.ends_with('\n') {
+                    self.at_line_start = true;
+                }
             }
         }
-        self.emitted_newlines += head.matches('\n').count();
-        if truncated {
-            // 收尾当前行，避免折叠提示粘在正文中间。
-            self.folded = true;
-            self.break_line(out);
+    }
+
+    /// 围栏内：整行缩进 + dim，内容原样（不解析行内标记）；闭合围栏不输出。
+    ///
+    /// 返回 `true` 表示缓冲里还有内容可以继续处理。
+    fn drain_fence(&mut self, out: &mut dyn Write) -> bool {
+        if let Some(idx) = self.line_buf.find('\n') {
+            let line: String = self.line_buf.drain(..=idx).collect();
+            let body = line.trim_end_matches('\n').trim_end_matches('\r');
+            if body.trim_start().starts_with("```") {
+                self.in_fence = false;
+                self.at_line_start = true;
+                return true;
+            }
+            let s = if body.is_empty() {
+                "\n".to_string()
+            } else {
+                format!("  {}\n", dim(body))
+            };
+            self.emit(out, &s);
+            self.at_line_start = true;
+            return true;
         }
+        // 没有换行：行首可能是闭合围栏，等换行确认；否则代码内容原样流出。
+        let trimmed = self.line_buf.trim_start();
+        if trimmed.is_empty() || "```".starts_with(trimmed) {
+            return false;
+        }
+        let chunk = std::mem::take(&mut self.line_buf);
+        let s = if self.at_line_start {
+            format!("  {}", dim(&chunk))
+        } else {
+            dim(&chunk)
+        };
+        self.at_line_start = false;
+        self.emit(out, &s);
+        false
+    }
+
+    /// 写出一段已渲染文本（可能含多个换行），同步排版状态与折叠计数。
+    fn emit(&mut self, out: &mut dyn Write, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        let _ = write!(out, "{s}");
+        let _ = out.flush();
+        self.blank_emitted = false;
+        self.emitted_lines += s.matches('\n').count();
+        if let Some(last) = s.chars().last() {
+            self.at_line_start = last == '\n';
+        }
+    }
+
+    /// 在非正文输出（工具卡、空行、审批、轮末）之前，把没成行的尾巴吐出来，
+    /// 保证屏幕顺序与事件顺序一致；此时不再保留半截标记。
+    fn flush_pending(&mut self, out: &mut dyn Write) {
+        if self.line_buf.is_empty() {
+            return;
+        }
+        let chunk = std::mem::take(&mut self.line_buf);
+        if self.folded {
+            return;
+        }
+        let mut rendered = String::new();
+        if self.in_fence {
+            rendered.push_str("  ");
+            rendered.push_str(&dim(&chunk));
+        } else {
+            self.inline.feed(&chunk, &mut rendered);
+            self.inline.close(&mut rendered);
+            self.inline = Inline::default();
+        }
+        self.emit(out, &rendered);
     }
 
     /// 保证下一段输出另起一行；已在新行首时是空操作（不产生多余空行）。
@@ -384,6 +891,7 @@ impl ReplRender {
 
     /// 独立成行（工具卡、结果行）：先另起一行，再整行写出。
     fn line(&mut self, out: &mut dyn Write, s: &str) {
+        self.flush_pending(out);
         self.break_line(out);
         let _ = writeln!(out, "{s}");
         self.at_line_start = true;
@@ -394,6 +902,7 @@ impl ReplRender {
     ///
     /// 幂等：已经有一个空行时再调用不会叠出第二个（结果行后本就留了空行）。
     fn blank(&mut self, out: &mut dyn Write) {
+        self.flush_pending(out);
         self.break_line(out);
         if self.blank_emitted {
             return;
@@ -411,22 +920,36 @@ impl ReplRender {
 
     /// 本轮结束：若发生过折叠，补一行提示；并记下完整正文供 `/full`。
     fn finish_turn(&mut self, out: &mut dyn Write) {
+        // 流结束时最后一行可能没有换行：补上并走一次 drain，避免尾部内容丢失。
+        if self.markdown && !self.folded && !self.line_buf.is_empty() {
+            self.line_buf.push('\n');
+            self.drain(out);
+        }
         let text = std::mem::take(&mut self.turn_text);
-        self.emitted_newlines = 0;
+        let emitted = self.emitted_lines;
+        self.emitted_lines = 0;
+        self.line_buf.clear();
+        self.in_fence = false;
+        self.inline = Inline::default();
         if text.trim().is_empty() {
             self.last_turn = None;
             self.folded = false;
             return;
         }
         if self.folded {
-            let lines = text.lines().count();
-            let hidden = lines.saturating_sub(self.preview_lines);
+            // 总数按渲染后的行数算，与屏幕上看到的行数一致。
+            let total = if self.markdown {
+                render_text(&text, true).matches('\n').count()
+            } else {
+                text.lines().count()
+            };
+            let hidden = total.saturating_sub(emitted);
             self.break_line(out);
             let _ = writeln!(
                 out,
                 "{}",
                 dim(&format!(
-                    "{FOLD_HINT} {hidden} 行（共 {lines} 行；输入 /full 查看全文）"
+                    "{FOLD_HINT} {hidden} 行（共 {total} 行；输入 /full 查看全文）"
                 ))
             );
             self.at_line_start = true;
@@ -440,13 +963,22 @@ impl ReplRender {
     ///
     /// 返回 `false` 表示没有可展开的内容。
     fn replay_last_turn(&mut self, out: &mut dyn Write) -> bool {
+        self.flush_pending(out);
         match self.last_turn.take() {
             Some(text) if !text.trim().is_empty() => {
                 self.blank(out);
-                let _ = write!(out, "{text}");
-                if !text.ends_with('\n') {
-                    let _ = writeln!(out);
-                }
+                // 与实时输出走同一套渲染，折叠前/展开后形态一致。
+                let rendered = if self.markdown {
+                    render_text(&text, true)
+                } else {
+                    let mut s = text.clone();
+                    if !s.ends_with('\n') {
+                        s.push('\n');
+                    }
+                    s
+                };
+                let _ = out.write_all(rendered.as_bytes());
+                let _ = out.flush();
                 self.at_line_start = true;
                 self.blank_emitted = false;
                 true
@@ -540,6 +1072,8 @@ fn handle_event(
                     tool_card(tool, &args)
                 })
                 .unwrap_or_else(|| "未知操作".to_string());
+            // 审批提示由行编辑线程打印，先把正文尾巴吐完，避免提示插在句子中间。
+            render.flush_pending(out);
             req_tx.send(ReplRequest::Approval { summary: card }).ok();
             let decision = match recv_outcome(out_rx) {
                 ReplOutcome::Line(line) => {
@@ -650,8 +1184,11 @@ fn run_slash(
                     "rw" | "workspace" | "write" => *mode = PermissionMode::Workspace,
                     "full" | "all" | "yolo" => *mode = PermissionMode::Full,
                     _ => {
-                        let _ =
-                            writeln!(out, "{} `{arg}` （可用 ro | rw | full）", red("未知权限模式："));
+                        let _ = writeln!(
+                            out,
+                            "{} `{arg}` （可用 ro | rw | full）",
+                            red("未知权限模式：")
+                        );
                         return Ok(false);
                     }
                 }
@@ -855,6 +1392,82 @@ mod tests {
         assert_eq!(mode_name(PermissionMode::ReadOnly), "只读");
         assert_eq!(mode_name(PermissionMode::Workspace), "工作区");
         assert_eq!(mode_name(PermissionMode::Full), "完全");
+    }
+
+    #[test]
+    fn markdown_strips_inline_markers() {
+        let text = render_text("**粗体** 与 `代码` 和 [链接](https://example.com)\n", true);
+        assert!(text.contains("粗体"), "{text}");
+        assert!(!text.contains("**"), "{text}");
+        assert!(!text.contains('`'), "{text}");
+        assert!(text.contains("链接 (https://example.com)"), "{text}");
+    }
+
+    #[test]
+    fn markdown_headings_lists_and_quotes_lose_markers() {
+        let text = render_text("## 完成情况\n\n- 第一项\n> 引用\n---\n", true);
+        assert!(text.contains("完成情况") && !text.contains("##"), "{text}");
+        assert!(text.contains("• 第一项"), "{text}");
+        assert!(text.contains("│ 引用"), "{text}");
+        assert!(text.contains('─'), "{text}");
+    }
+
+    #[test]
+    fn markdown_fence_is_verbatim() {
+        let text = render_text("```bash\nlet a = **1**; // # 注释\n```\n", true);
+        assert!(text.contains("let a = **1**; // # 注释"), "{text}");
+        assert!(!text.contains("```"), "{text}");
+        assert!(text.contains("bash"), "{text}");
+    }
+
+    #[test]
+    fn markdown_disabled_is_identity() {
+        let src = "## 标题\n**粗体**\n";
+        assert_eq!(render_text(src, false), src);
+    }
+
+    #[test]
+    fn snake_case_is_not_italicized() {
+        let text = render_text("mrorcode_cli 与 snake_case 名字\n", true);
+        assert!(text.contains("mrorcode_cli"), "{text}");
+        assert!(text.contains("snake_case"), "{text}");
+    }
+
+    #[test]
+    fn streaming_holds_half_markers_until_complete() {
+        let mut render = ReplRender::new();
+        render.markdown = true;
+        let mut out: Vec<u8> = Vec::new();
+        // 单个 `*` 是半截标记：先不输出。
+        render.text(&mut out, "*");
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
+        // 补齐成 `**粗体**` 后整行成形。
+        render.text(&mut out, "*粗体*\n");
+        assert_eq!(String::from_utf8(out).unwrap(), "粗体\n");
+    }
+
+    #[test]
+    fn streaming_fence_keeps_code_verbatim_across_deltas() {
+        let mut render = ReplRender::new();
+        render.markdown = true;
+        let mut out: Vec<u8> = Vec::new();
+        render.text(&mut out, "```rust\nlet x = 1; // **不是粗体**\n");
+        render.text(&mut out, "```\n");
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("let x = 1; // **不是粗体**"), "{text}");
+        assert!(!text.contains("```"), "{text}");
+    }
+
+    #[test]
+    fn partial_line_is_flushed_before_tool_card() {
+        // 正文停在句子中间时，工具卡之前必须把尾巴吐出来，不能丢字。
+        let mut render = ReplRender::new();
+        render.markdown = true;
+        let mut out: Vec<u8> = Vec::new();
+        render.text(&mut out, "我先看看");
+        render.blank(&mut out);
+        render.line(&mut out, "● 查看目录");
+        assert_eq!(String::from_utf8(out).unwrap(), "我先看看\n\n● 查看目录\n");
     }
 
     #[test]
