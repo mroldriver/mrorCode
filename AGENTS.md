@@ -136,7 +136,7 @@ cargo tree -p mrorcode-cli --edges normal,build --prefix none | sed 's/ (\*)//' 
   `log`，所以 `log` 仍在图里——这是正常的，不是残留。
 - **dev-only 不进二进制**：`criterion`、`wiremock` 只出现在测试/基准；release 图不含它们。
 - **MSRV 1.88**：新依赖的 `rust-version` 必须 ≤ 1.88，且不得引入 C 构建脚本依赖。
-- **体积**：release 约 5.4 MB（5,355,520 B；`lto = "thin"` + `codegen-units = 1` + `strip` +
+- **体积**：release 约 5.4 MB（5,380,608 B；`lto = "thin"` + `codegen-units = 1` + `strip` +
   `panic = "abort"`）。新增重依赖前先量化体积与冷编译时间的代价（见 Build speed）。
 
 ### 新增/升级依赖的规矩
