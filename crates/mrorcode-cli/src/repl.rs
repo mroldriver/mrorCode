@@ -198,14 +198,14 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
         out,
         "{} {}",
         bold(&cyan("mrorcode")),
-        dim("(bare ANSI REPL)")
+        dim("（裸 ANSI 交互界面）")
     );
     let _ = writeln!(
         out,
         "{}  {}\n{}\n",
-        dim("permission:"),
+        dim("权限："),
         green(mode_name(mode)),
-        dim("· /help for commands · /exit or Ctrl-D to quit")
+        dim("· /help 查看命令 · /exit 或 Ctrl-D 退出")
     );
 
     // 输出排版状态（行首感知 + 工具卡表），跨轮复用。
@@ -215,7 +215,7 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
         req_tx.send(ReplRequest::Prompt).ok();
         let line = match recv_outcome(&out_rx) {
             ReplOutcome::Eof => {
-                let _ = writeln!(out, "\nbye.");
+                let _ = writeln!(out, "\n再见。");
                 break;
             }
             // Ctrl-C：丢弃当前行，重新提示。
@@ -232,7 +232,7 @@ pub async fn run_repl(assembly: &mut Assembly, log: Option<RunLog>) -> anyhow::R
                 log.slash(body);
             }
             if run_slash(body, assembly, &mut out, &mut mode, &mut render)? {
-                let _ = writeln!(out, "bye.");
+                let _ = writeln!(out, "再见。");
                 break;
             }
             continue;
@@ -579,12 +579,12 @@ fn handle_event(
         }
         AgentEvent::Cancelled => {
             render.finish_turn(out);
-            render.line(out, &dim("(cancelled)"));
+            render.line(out, &dim("（已取消）"));
             render.blank(out);
             return Ok(true);
         }
         AgentEvent::Error { message, .. } => {
-            eprintln!("{} {message}", red("error:"));
+            eprintln!("{} {message}", red("错误："));
         }
         AgentEvent::SubAgent { event, .. } => {
             // 子 agent 事件递归渲染（REPL 不嵌套审批，子请求不会出现）。
@@ -666,7 +666,7 @@ fn run_slash(
         }
         "interrupt" | "cancel" | "esc" => {
             assembly.handle.cancel();
-            let _ = writeln!(out, "{}", dim("(interrupt sent)"));
+            let _ = writeln!(out, "{}", dim("（已发送中断）"));
         }
         "full" => {
             if !render.replay_last_turn(out) {
@@ -688,9 +688,9 @@ fn run_slash(
 /// 权限模式的显示名。
 fn mode_name(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ReadOnly => "read-only",
-        PermissionMode::Workspace => "workspace",
-        PermissionMode::Full => "full",
+        PermissionMode::ReadOnly => "只读",
+        PermissionMode::Workspace => "工作区",
+        PermissionMode::Full => "完全",
     }
 }
 
@@ -848,6 +848,13 @@ mod tests {
         assert_eq!(tool_label("grep"), Some("搜索内容"));
         // 未知工具不猜中文名，由 tool_card 回退成 `调用 <原名>`。
         assert_eq!(tool_label("mcp__x__y"), None);
+    }
+
+    #[test]
+    fn permission_mode_names_are_chinese() {
+        assert_eq!(mode_name(PermissionMode::ReadOnly), "只读");
+        assert_eq!(mode_name(PermissionMode::Workspace), "工作区");
+        assert_eq!(mode_name(PermissionMode::Full), "完全");
     }
 
     #[test]
